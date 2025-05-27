@@ -421,7 +421,7 @@ class NetworkTrainer:
         return logs
 
     def get_optimizer(self, args, trainable_params: list[torch.nn.Parameter]) -> tuple[str, str, torch.optim.Optimizer]:
-        # adamw, adamw8bit, adafactor
+        # AdamW, AdamW8bit, Adafactor, RAdamScheduleFree
 
         optimizer_type = args.optimizer_type.lower()
 
@@ -488,6 +488,16 @@ class NetworkTrainer:
             optimizer_class = torch.optim.AdamW
             optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
+        elif optimizer_type.endswith("schedulefree".lower()):
+            try:
+                import schedulefree as sf
+            except ImportError:
+                raise ImportError("No schedulefree / schedulefreeがインストールされていないようです")
+
+            if optimizer_type == "RAdamScheduleFree".lower():
+                optimizer_class = sf.RAdamScheduleFree
+                optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
+
         if optimizer is None:
             # 任意のoptimizerを使う
             case_sensitive_optimizer_type = args.optimizer_type  # not lower
@@ -515,12 +525,13 @@ class NetworkTrainer:
             train_fn = lambda: None
             eval_fn = lambda: None
 
+        train_fn()  # For schedule_free optimizer, explicit setting is required because train_mode's default value is False
         return optimizer_name, optimizer_args, optimizer, train_fn, eval_fn
 
     def is_schedulefree_optimizer(self, optimizer: torch.optim.Optimizer, args: argparse.Namespace) -> bool:
         return args.optimizer_type.lower().endswith("schedulefree".lower())  # or args.optimizer_schedulefree_wrapper
 
-    def get_dummy_scheduler(optimizer: torch.optim.Optimizer) -> Any:
+    def get_dummy_scheduler(self, optimizer: torch.optim.Optimizer) -> Any:
         # dummy scheduler for schedulefree optimizer. supports only empty step(), get_last_lr() and optimizers.
         # this scheduler is used for logging only.
         # this isn't be wrapped by accelerator because of this class is not a subclass of torch.optim.lr_scheduler._LRScheduler
