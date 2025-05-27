@@ -3,7 +3,7 @@ name = "musubi-tuner"
 version = "0.1.0"
 description = "Musubi Tuner by kohya_ss"
 readme = "README.md"
-requires-python = ">=3.10, <3.11"
+requires-python = ">=3.11, <3.12"
 dependencies = [
     "accelerate>=1.6.0",
     "ascii-magic==2.3.0",
@@ -40,4 +40,4 @@ explicit = true
 pytorch-triton = { index = "pytorch-nightly-cu128" }
 torch = { index = "pytorch-nightly-cu128" }
 torchvision = { index = "pytorch-nightly-cu128" }
-flash-attn = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.2.1/flash_attn-2.4.3+cu128torch2.8-cp310-cp310-linux_x86_64.whl" }
+flash-attn = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.2.1/flash_attn-2.4.3+cu128torch2.8-cp311-cp311-linux_x86_64.whl" }
