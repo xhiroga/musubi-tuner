@@ -5,3 +5,4 @@ logs/
 main.exp
 main.lib
 main.obj
+wandb/
