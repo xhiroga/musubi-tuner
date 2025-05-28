@@ -2,6 +2,7 @@ __pycache__/
 .venv
 venv/
 logs/
+output/
 main.exp
 main.lib
 main.obj
