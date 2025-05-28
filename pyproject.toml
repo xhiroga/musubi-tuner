@@ -3,7 +3,7 @@ name = "musubi-tuner"
 version = "0.1.0"
 description = "Musubi Tuner by kohya_ss"
 readme = "README.md"
-requires-python = ">=3.11, <3.12"
+requires-python = ">=3.10, <3.11"
 dependencies = [
     "accelerate>=1.6.0",
     "ascii-magic==2.3.0",
@@ -24,8 +24,8 @@ dependencies = [
     "schedulefree>=1.4.1",
     "tensorboard>=2.18.0",
     "toml>=0.10.2",
-    "torch>=2.8.0.dev20250525",
-    "torchvision>=0.22.0.dev20250525",
+    "torch>=2.5.1",
+    "torchvision>=0.20.1",
     "tqdm>=4.66.5",
     "transformers>=4.46.3",
     "voluptuous>=0.15.2",
@@ -33,12 +33,12 @@ dependencies = [
 ]
 
 [[tool.uv.index]]
-name = "pytorch-nightly-cu128"
-url = "https://download.pytorch.org/whl/nightly/cu128"
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
 explicit = true
 
 [tool.uv.sources]
-pytorch-triton = { index = "pytorch-nightly-cu128" }
-torch = { index = "pytorch-nightly-cu128" }
-torchvision = { index = "pytorch-nightly-cu128" }
-flash-attn = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.2.1/flash_attn-2.4.3+cu128torch2.8-cp311-cp311-linux_x86_64.whl" }
+pytorch-triton = { index = "pytorch-cu124" }
+torch = { index = "pytorch-cu124" }
+torchvision = { index = "pytorch-cu124" }
+flash-attn = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.0.8/flash_attn-2.4.3+cu124torch2.5-cp310-cp310-linux_x86_64.whl" }
