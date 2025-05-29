@@ -1,6 +1,7 @@
 __pycache__/
 .venv
 venv/
+dist/
 logs/
 main.exp
 main.lib
