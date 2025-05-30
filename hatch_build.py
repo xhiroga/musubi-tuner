@@ -11,26 +11,15 @@ class CustomBuildHook(BuildHookInterface):
     
     PLUGIN_NAME = "custom"
     
-    MODULES_TO_COPY = [
-        "dataset", "frame_pack", "hunyuan_model", "modules", 
-        "networks", "utils", "wan"
-    ]
-    
-    ROOT_SCRIPTS = [
-        "cache_latents.py", "cache_text_encoder_outputs.py", "convert_lora.py",
-        "fpack_cache_latents.py", "fpack_cache_text_encoder_outputs.py", 
-        "fpack_generate_video.py", "fpack_train_network.py",
-        "hv_generate_video.py", "hv_train.py", "hv_train_network.py",
-        "merge_lora.py", "wan_cache_latents.py", "wan_cache_text_encoder_outputs.py",
-        "wan_generate_video.py", "wan_train_network.py"
-    ]
-    
     def initialize(self, version: str, build_data: Dict) -> None:
         """Initialize build process and create package structure."""
         self.source_dir = Path(self.root)
         self.package_name = "musubi_tuner"
-        self.temp_dir = self.source_dir / "temp_build"
+        self.temp_dir = self.source_dir / "temp"
         self.package_dir = self.temp_dir / self.package_name
+        
+        self.subpackages = self._discover_subpackages()
+        self.root_scripts = self._discover_root_scripts()
         
         self._setup_temp_directory()
         self._copy_files()
@@ -39,61 +28,65 @@ class CustomBuildHook(BuildHookInterface):
         
         build_data['packages'] = [self.package_name]
     
+    def _discover_subpackages(self) -> List[str]:
+        subpackages = []
+        
+        for item in self.source_dir.iterdir():
+            if item.is_dir() and not item.name.startswith('.') and not item.name.startswith('_'):
+                init_file = item / "__init__.py"
+                if init_file.exists():
+                    subpackages.append(item.name)
+        
+        subpackages.sort()
+        return subpackages
+    
+    def _discover_root_scripts(self) -> List[str]:
+        exclude_patterns = {'hatch_build.py'}
+        
+        root_scripts = []
+        
+        for item in self.source_dir.iterdir():
+            if item.is_file() and item.suffix == '.py' and item.name not in exclude_patterns:
+                root_scripts.append(item.name)
+        
+        root_scripts.sort()
+        return root_scripts
+    
     def _setup_temp_directory(self) -> None:
-        """Create clean temporary directory structure."""
         if self.temp_dir.exists():
             shutil.rmtree(self.temp_dir)
         self.temp_dir.mkdir()
         self.package_dir.mkdir()
     
     def _copy_files(self) -> None:
-        """Copy all necessary files to the package directory."""
-        self._copy_modules()
+        self._copy_subpackages()
         self._copy_root_scripts()
         self._create_init_file()
-        self._ensure_init_files()
     
-    def _copy_modules(self) -> None:
-        """Copy module directories."""
-        for module in self.MODULES_TO_COPY:
-            src_path = self.source_dir / module
+    def _copy_subpackages(self) -> None:
+        for subpackage in self.subpackages:
+            src_path = self.source_dir / subpackage
             if src_path.exists():
-                shutil.copytree(src_path, self.package_dir / module)
+                shutil.copytree(src_path, self.package_dir / subpackage)
     
     def _copy_root_scripts(self) -> None:
-        """Copy root scripts."""
-        for script in self.ROOT_SCRIPTS:
+        for script in self.root_scripts:
             src_path = self.source_dir / script
             if src_path.exists():
                 shutil.copy2(src_path, self.package_dir / script)
     
     def _create_init_file(self) -> None:
-        """Create main __init__.py file."""
         init_file = self.package_dir / "__init__.py"
         init_file.write_text('"""Musubi Tuner package."""\n')
     
-    def _ensure_init_files(self) -> None:
-        """Ensure all Python package directories have __init__.py files."""
-        for root, _, files in os.walk(self.package_dir):
-            if any(f.endswith('.py') for f in files):
-                init_file = Path(root) / "__init__.py"
-                if not init_file.exists():
-                    init_file.write_text("")
-    
     def _rewrite_imports(self) -> None:
-        """Rewrite all import statements to use musubi_tuner namespace."""
-        for py_file in self._find_python_files():
-            self._rewrite_file_imports(py_file)
-    
-    def _find_python_files(self) -> List[Path]:
-        """Find all Python files in the package directory."""
-        python_files = []
         for root, _, files in os.walk(self.package_dir):
-            python_files.extend(Path(root) / file for file in files if file.endswith('.py'))
-        return python_files
+            for file in files:
+                if file.endswith('.py'):
+                    file_path = Path(root) / file
+                    self._rewrite_file_imports(file_path)
     
     def _rewrite_file_imports(self, file_path: Path) -> None:
-        """Rewrite imports in a single Python file."""
         try:
             content = file_path.read_text(encoding='utf-8')
             relative_path = file_path.relative_to(self.package_dir)
@@ -130,12 +123,12 @@ class CustomBuildHook(BuildHookInterface):
     
     def _is_module_import(self, line: str) -> bool:
         """Check if line is an import of our modules."""
-        pattern = r'^\s*from\s+(' + '|'.join(self.MODULES_TO_COPY) + r')\b'
+        pattern = r'^\s*from\s+(' + '|'.join(self.subpackages) + r')\b'
         return bool(re.match(pattern, line))
     
     def _is_simple_module_import(self, line: str) -> bool:
         """Check if line is a simple import of our modules."""
-        pattern = r'^\s*import\s+(' + '|'.join(self.MODULES_TO_COPY) + r')\b'
+        pattern = r'^\s*import\s+(' + '|'.join(self.subpackages) + r')\b'
         return bool(re.match(pattern, line))
     
     def _rewrite_relative_import(self, line: str, current_module_parts: List[str]) -> str:
@@ -167,7 +160,7 @@ class CustomBuildHook(BuildHookInterface):
         
         indent, module_name, import_part = match.groups()
         
-        if module_name.split('.')[0] in self.MODULES_TO_COPY:
+        if module_name.split('.')[0] in self.subpackages:
             return f"{indent}from musubi_tuner.{module_name} import {import_part}"
         
         return line
@@ -180,7 +173,7 @@ class CustomBuildHook(BuildHookInterface):
         
         indent, module_name, rest = match.groups()
         
-        if module_name.split('.')[0] in self.MODULES_TO_COPY:
+        if module_name.split('.')[0] in self.subpackages:
             return f"{indent}import musubi_tuner.{module_name}{rest}"
         
         return line
