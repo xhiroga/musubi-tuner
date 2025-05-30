@@ -14,9 +14,9 @@ Test procedure:
 2. `uvx hatch build`
 3. `unzip dist/musubi_tuner-*.whl -d dist/whl/`
 4. `tar -xzf dist/musubi_tuner-*.tar.gz -C dist/`
-5. `mkdir build_test && uv --directory build_test init --no-workspace`
-6. `uv --project build-test add .`
-7. `uv --project build-test run python -c "import musubi_tuner.fpack_cache_latents"`
+5. `deactivate && mkdir build_test && uv --directory build_test init --no-workspace`
+6. `uv --directory build_test --project build-test add ..`
+7. `uv --directory build_test --project build-test run python -c "import musubi_tuner.fpack_cache_latents"`
 """
 
 class RelativeToAbsoluteTransformer(ast.NodeTransformer):
@@ -100,16 +100,15 @@ class CustomBuildHook(BuildHookInterface):
         """Initialize build process and create package structure."""
         self.source_dir = Path(self.root)
         self.package_name = "musubi_tuner"
-        self.temp_dir = self.source_dir / "temp"
-        self.package_dir = self.temp_dir / self.package_name
+        # パッケージを最初から最終位置に作成
+        self.package_dir = self.source_dir / self.package_name
         
         self.subpackages = self._discover_subpackages()
         self.root_scripts = self._discover_root_scripts()
         
-        self._setup_temp_directory()
+        self._setup_package_directory()
         self._copy_files()
         self._rewrite_imports()
-        self._move_to_final_location()
         
         build_data['packages'] = [self.package_name]
     
@@ -137,10 +136,9 @@ class CustomBuildHook(BuildHookInterface):
         root_scripts.sort()
         return root_scripts
     
-    def _setup_temp_directory(self) -> None:
-        if self.temp_dir.exists():
-            shutil.rmtree(self.temp_dir)
-        self.temp_dir.mkdir()
+    def _setup_package_directory(self) -> None:
+        if self.package_dir.exists():
+            shutil.rmtree(self.package_dir)
         self.package_dir.mkdir()
     
     def _copy_files(self) -> None:
@@ -191,18 +189,7 @@ class CustomBuildHook(BuildHookInterface):
         except Exception as e:
             print(f"Warning: Failed to rewrite imports in {file_path}: {e}")
     
-    def _move_to_final_location(self) -> None:
-        """Move package to root level for proper wheel structure."""
-        final_package_dir = self.source_dir / self.package_name
-        if final_package_dir.exists():
-            shutil.rmtree(final_package_dir)
-        shutil.move(str(self.package_dir), str(final_package_dir))
-    
     def finalize(self, version: str, build_data: Dict, artifact_path: str) -> None:
-        """Clean up temporary files after build."""
-        if self.temp_dir.exists():
-            shutil.rmtree(self.temp_dir)
-        
-        final_package_dir = self.source_dir / self.package_name
-        if final_package_dir.exists():
-            shutil.rmtree(final_package_dir)
+        """Clean up package directory after build."""
+        if self.package_dir.exists():
+            shutil.rmtree(self.package_dir)
