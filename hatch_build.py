@@ -1,9 +1,94 @@
 import os
-import re
 import shutil
+import ast
 from pathlib import Path
 from typing import Dict, List
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
+
+
+"""
+Hook for bundling musubi-tuner modules into the `musubi_tuner` package.
+
+Test procedure:
+1. `rm -rf dist`
+2. `uvx hatch build`
+3. `unzip dist/musubi_tuner-*.whl -d dist/whl/`
+4. `tar -xzf dist/musubi_tuner-*.tar.gz -C dist/`
+5. `mkdir build_test && uv --directory build_test init --no-workspace`
+6. `uv --project build-test add .`
+7. `uv --project build-test run python -c "import musubi_tuner.fpack_cache_latents"`
+"""
+
+class RelativeToAbsoluteTransformer(ast.NodeTransformer):
+    def __init__(self, package_name: str, current_module_parts: List[str], subpackages: List[str], root_scripts: List[str]):
+        self.package_name = package_name
+        self.current_module_parts = current_module_parts
+        self.subpackages = subpackages
+        self.root_scripts = root_scripts
+        # root_scriptsから.pyを除いたモジュール名のセットを作成
+        self.root_script_modules = {script[:-3] for script in root_scripts if script.endswith('.py')}
+
+    def _is_our_module(self, module_name: str) -> bool:
+        """Check if a module name is one of our subpackages or root scripts."""
+        if not module_name:
+            return False
+        
+        base_module = module_name.split('.')[0]
+        return base_module in self.subpackages or base_module in self.root_script_modules
+
+    def _convert_relative_to_absolute(self, module_name: str, level: int) -> str:
+        """Convert relative import to absolute import path."""
+        # 現在のモジュールから相対的な位置を計算
+        if level > len(self.current_module_parts):
+            # レベルが深すぎる場合は変換しない
+            return module_name
+        
+        # 基準となるモジュール部分を計算
+        base_parts = self.current_module_parts[:-level+1] if level > 1 else self.current_module_parts
+        
+        if module_name:
+            # from .module import something の場合
+            return f"{self.package_name}.{'.'.join(base_parts + [module_name])}"
+        else:
+            # from . import something の場合
+            return f"{self.package_name}.{'.'.join(base_parts)}" if base_parts else self.package_name
+
+    def _add_package_prefix(self, module_name: str) -> str:
+        """Add package prefix to our module."""
+        return f"{self.package_name}.{module_name}"
+
+    def visit_ImportFrom(self, node):
+        # 相対インポートの処理
+        if node.level and node.level > 0:
+            abs_module = self._convert_relative_to_absolute(node.module, node.level)
+            if abs_module != node.module:  # 変換が行われた場合のみ
+                print(f"[TRANSFORM] from {'.' * node.level}{node.module or ''} -> from {abs_module}")
+                return ast.ImportFrom(module=abs_module, names=node.names, level=0)
+        
+        # サブパッケージやroot_scriptsの絶対インポートの処理
+        elif self._is_our_module(node.module):
+            abs_module = self._add_package_prefix(node.module)
+            print(f"[TRANSFORM] from {node.module} -> from {abs_module}")
+            return ast.ImportFrom(module=abs_module, names=node.names, level=0)
+        
+        return node
+
+    def visit_Import(self, node):
+        """Handle import statements for subpackages and root scripts."""
+        new_names = []
+        has_changes = False
+        
+        for alias in node.names:
+            if self._is_our_module(alias.name):
+                new_module_name = self._add_package_prefix(alias.name)
+                print(f"[TRANSFORM] import {alias.name} -> import {new_module_name}")
+                new_alias = ast.alias(name=new_module_name, asname=alias.asname)
+                new_names.append(new_alias)
+                has_changes = True
+            else:
+                new_names.append(alias)
+        
+        return ast.Import(names=new_names) if has_changes else node
 
 
 class CustomBuildHook(BuildHookInterface):
@@ -92,91 +177,19 @@ class CustomBuildHook(BuildHookInterface):
             relative_path = file_path.relative_to(self.package_dir)
             current_module_parts = list(relative_path.parent.parts)
             
-            lines = content.splitlines()
-            modified_lines = [
-                self._rewrite_import_line(line, current_module_parts) 
-                for line in lines
-            ]
+            # ASTを使用してファイルを解析
+            tree = ast.parse(content)
             
-            file_path.write_text('\n'.join(modified_lines) + '\n', encoding='utf-8')
+            # 相対インポートを絶対インポートに変換
+            transformer = RelativeToAbsoluteTransformer(self.package_name, current_module_parts, self.subpackages, self.root_scripts)
+            new_tree = transformer.visit(tree)
+            
+            # 変更されたASTをコードに戻す
+            new_content = ast.unparse(new_tree)
+            file_path.write_text(new_content, encoding='utf-8')
             
         except Exception as e:
             print(f"Warning: Failed to rewrite imports in {file_path}: {e}")
-    
-    def _rewrite_import_line(self, line: str, current_module_parts: List[str]) -> str:
-        """Rewrite a single import line."""
-        stripped_line = line.strip()
-        
-        if not stripped_line or stripped_line.startswith('#'):
-            return line
-        
-        if re.match(r'^\s*from\s+\.', line):
-            return self._rewrite_relative_import(line, current_module_parts)
-        
-        if self._is_module_import(line):
-            return self._rewrite_absolute_import(line)
-        
-        if self._is_simple_module_import(line):
-            return self._rewrite_simple_import(line)
-        
-        return line
-    
-    def _is_module_import(self, line: str) -> bool:
-        """Check if line is an import of our modules."""
-        pattern = r'^\s*from\s+(' + '|'.join(self.subpackages) + r')\b'
-        return bool(re.match(pattern, line))
-    
-    def _is_simple_module_import(self, line: str) -> bool:
-        """Check if line is a simple import of our modules."""
-        pattern = r'^\s*import\s+(' + '|'.join(self.subpackages) + r')\b'
-        return bool(re.match(pattern, line))
-    
-    def _rewrite_relative_import(self, line: str, current_module_parts: List[str]) -> str:
-        """Rewrite relative imports to absolute imports."""
-        match = re.match(r'^(\s*)from\s+(\.+)([^\s]*)\s+import\s+(.+)$', line)
-        if not match:
-            return line
-        
-        indent, dots, module_part, import_part = match.groups()
-        level = len(dots)
-        
-        if level > len(current_module_parts):
-            return line
-        
-        base_parts = current_module_parts[:-level+1] if level > 1 else current_module_parts
-        
-        if module_part:
-            absolute_module = f"musubi_tuner.{'.'.join(base_parts + [module_part])}"
-        else:
-            absolute_module = f"musubi_tuner.{'.'.join(base_parts)}" if base_parts else "musubi_tuner"
-        
-        return f"{indent}from {absolute_module} import {import_part}"
-    
-    def _rewrite_absolute_import(self, line: str) -> str:
-        """Rewrite absolute imports of our modules."""
-        match = re.match(r'^(\s*)from\s+([^\s]+)\s+import\s+(.+)$', line)
-        if not match:
-            return line
-        
-        indent, module_name, import_part = match.groups()
-        
-        if module_name.split('.')[0] in self.subpackages:
-            return f"{indent}from musubi_tuner.{module_name} import {import_part}"
-        
-        return line
-    
-    def _rewrite_simple_import(self, line: str) -> str:
-        """Rewrite simple import statements."""
-        match = re.match(r'^(\s*)import\s+([^\s]+)(.*)$', line)
-        if not match:
-            return line
-        
-        indent, module_name, rest = match.groups()
-        
-        if module_name.split('.')[0] in self.subpackages:
-            return f"{indent}import musubi_tuner.{module_name}{rest}"
-        
-        return line
     
     def _move_to_final_location(self) -> None:
         """Move package to root level for proper wheel structure."""
