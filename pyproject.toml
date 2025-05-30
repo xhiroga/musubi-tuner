@@ -12,7 +12,6 @@ dependencies = [
     "diffusers>=0.32.1",
     "easydict==1.13",
     "einops>=0.7.0",
-    "flash-attn",
     "ftfy==6.3.1",
     "huggingface-hub>=0.30.0",
     "matplotlib>=3.10.0",
@@ -48,4 +47,3 @@ explicit = true
 pytorch-triton = { index = "pytorch-cu124" }
 torch = { index = "pytorch-cu124" }
 torchvision = { index = "pytorch-cu124" }
-flash-attn = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.0.8/flash_attn-2.4.3+cu124torch2.5-cp310-cp310-linux_x86_64.whl" }
