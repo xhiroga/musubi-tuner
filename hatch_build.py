@@ -10,7 +10,7 @@ from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 Hook for bundling musubi-tuner modules into the `musubi_tuner` package.
 
 Test procedure:
-1. `rm -rf dist`
+1. `rm -rf dist && rm -rf build_test`
 2. `uvx hatch build`
 3. `unzip dist/musubi_tuner-*.whl -d dist/whl/`
 4. `tar -xzf dist/musubi_tuner-*.tar.gz -C dist/`
