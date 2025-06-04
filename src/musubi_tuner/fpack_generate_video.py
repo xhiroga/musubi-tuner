@@ -8,7 +8,6 @@ import re
 import time
 import math
 import copy
-import signal
 from typing import Tuple, Optional, List, Union, Any, Dict
 
 import torch
@@ -231,14 +230,12 @@ def parse_args() -> argparse.Namespace:
     
     # Profiling arguments
     parser.add_argument("--profile", action="store_true", help="Enable PyTorch profiling")
-    parser.add_argument("--profile_path", type=str, default="./profile_output", help="Path to save profiling output")
     parser.add_argument("--profile_shapes", action="store_true", default=False, help="Record tensor shapes in profiling (default: False)")
     parser.add_argument("--profile_memory", action="store_true", default=True, help="Profile memory usage (default: True)")
     parser.add_argument("--profile_stack", action="store_true", default=True, help="Record stack traces (default: True)")
     parser.add_argument("--profile_wait", type=int, default=1, help="Number of steps to wait before profiling")
     parser.add_argument("--profile_warmup", type=int, default=1, help="Number of warmup steps")
     parser.add_argument("--profile_active", type=int, default=5, help="Number of steps to actively profile")
-    parser.add_argument("--profile_cuda_only", action="store_true", help="Only profile CUDA operations")
 
     args = parser.parse_args()
 
@@ -1772,43 +1769,6 @@ def get_generation_settings(args: argparse.Namespace) -> GenerationSettings:
     return gen_settings
 
 
-# Global variable to track profiler state
-_profiler_stopped = False
-
-def stop_profiler_and_export(prof, profile_path):
-    """Stop profiler and export results"""
-    global _profiler_stopped
-    
-    if prof is not None and not _profiler_stopped:
-        try:
-            _profiler_stopped = True  # Mark as stopped before attempting to stop
-            prof.stop()
-            
-            # Generate timestamp for unique filename
-            time_flag = datetime.fromtimestamp(time.time()).strftime("%Y%m%d-%H%M%S")
-            
-            # Export the trace with timestamp
-            trace_filename = f"trace_{time_flag}.json"
-            trace_path = os.path.join(profile_path, trace_filename)
-            prof.export_chrome_trace(trace_path)
-            logger.info(f"Profiling stopped. Chrome trace saved to: {trace_path}")
-            
-            # Also export as tensorboard format
-            try:
-                stacks_filename = f"stacks_{time_flag}.txt"
-                stacks_path = os.path.join(profile_path, stacks_filename)
-                prof.export_stacks(stacks_path, "self_cuda_time_total")
-                logger.info(f"Stack traces saved to: {stacks_path}")
-            except Exception as e:
-                logger.warning(f"Could not export stack traces: {e}")
-                
-            logger.info(f"To view Chrome trace, open: chrome://tracing and load {trace_path}")
-            logger.info(f"To view with TensorBoard (if available), run: tensorboard --logdir {profile_path}")
-        except Exception as e:
-            logger.error(f"Error stopping profiler: {e}")
-    elif _profiler_stopped:
-        logger.debug("Profiler already stopped, skipping")
-
 def main():
     # Parse arguments
     args = parse_args()
@@ -1825,10 +1785,6 @@ def main():
     
     log_timing("Process started")
     
-    # Global variables for signal handling
-    global_prof = None
-    global_profile_path = None
-
     # Check if latents are provided
     latents_mode = args.latent_path is not None and len(args.latent_path) > 0
 
@@ -1841,13 +1797,7 @@ def main():
     # Setup profiler if enabled
     prof = None
     if args.profile:
-        os.makedirs(args.profile_path, exist_ok=True)
-        
-        # Configure activities
-        activities = []
-        if not args.profile_cuda_only:
-            activities.append(torch.profiler.ProfilerActivity.CPU)
-        activities.append(torch.profiler.ProfilerActivity.CUDA)
+        activities = [torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA]
         
         # Create profiler with schedule or without
         if args.profile_wait > 0 or args.profile_warmup > 0 or args.profile_active > 0:
@@ -1859,7 +1809,7 @@ def main():
                     active=args.profile_active,
                     repeat=1
                 ),
-                on_trace_ready=torch.profiler.tensorboard_trace_handler(args.profile_path),
+                on_trace_ready=torch.profiler.tensorboard_trace_handler(args.save_path),
                 record_shapes=args.profile_shapes,
                 profile_memory=args.profile_memory,
                 with_stack=args.profile_stack
@@ -1873,22 +1823,7 @@ def main():
             )
         
         prof.start()
-        logger.info(f"PyTorch profiling enabled. Output will be saved to: {args.profile_path}")
-        logger.info(f"Profiling config: shapes={args.profile_shapes}, memory={args.profile_memory}, "
-                   f"stack={args.profile_stack}, cuda_only={args.profile_cuda_only}")
-        
-        # Set global variables for signal handling
-        global_prof = prof
-        global_profile_path = args.profile_path
-        
-        # Register signal handlers but NOT atexit (to avoid double cleanup)
-        def signal_handler(signum, frame):
-            logger.info(f"Received signal {signum}, stopping profiler...")
-            stop_profiler_and_export(global_prof, global_profile_path)
-            exit(1)
-            
-        signal.signal(signal.SIGINT, signal_handler)
-        signal.signal(signal.SIGTERM, signal_handler)
+        logger.info(f"Profiling config: shapes={args.profile_shapes}, memory={args.profile_memory}, stack={args.profile_stack}")
 
     if latents_mode:
         # Original latent decode mode
@@ -1967,11 +1902,6 @@ def main():
 
         # Save latent and video
         save_output(args, vae, latent[0], device, None, log_timing)
-
-    # Stop profiler if enabled
-    if prof is not None:
-        # Only stop and export if not using schedule (schedule handles export automatically)
-        stop_profiler_and_export(prof, args.profile_path if args.profile else None)
 
     log_timing("Process completed")
     logger.info("Done!")
