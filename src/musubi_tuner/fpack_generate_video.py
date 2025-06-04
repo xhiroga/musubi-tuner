@@ -1814,7 +1814,7 @@ def main():
     
     # Start time tracking and setup timing log
     start_time = time.time()
-    timing_log_path = f"timing_log_{datetime.fromtimestamp(start_time).strftime('%Y%m%d-%H%M%S')}.txt"
+    timing_log_path = f"{args.save_path}/timing_log_{datetime.fromtimestamp(start_time).strftime('%Y%m%d-%H%M%S')}.txt"
     
     def log_timing(message):
         elapsed = time.time() - start_time
