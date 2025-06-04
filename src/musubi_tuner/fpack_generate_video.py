@@ -8,9 +8,11 @@ import re
 import time
 import math
 import copy
+import signal
 from typing import Tuple, Optional, List, Union, Any, Dict
 
 import torch
+import torch.profiler
 from safetensors.torch import load_file, save_file
 from safetensors import safe_open
 from PIL import Image
@@ -226,6 +228,17 @@ def parse_args() -> argparse.Namespace:
     # New arguments for batch and interactive modes
     parser.add_argument("--from_file", type=str, default=None, help="Read prompts from a file")
     parser.add_argument("--interactive", action="store_true", help="Interactive mode: read prompts from console")
+    
+    # Profiling arguments
+    parser.add_argument("--profile", action="store_true", help="Enable PyTorch profiling")
+    parser.add_argument("--profile_path", type=str, default="./profile_output", help="Path to save profiling output")
+    parser.add_argument("--profile_shapes", action="store_true", default=False, help="Record tensor shapes in profiling (default: False)")
+    parser.add_argument("--profile_memory", action="store_true", default=True, help="Profile memory usage (default: True)")
+    parser.add_argument("--profile_stack", action="store_true", default=True, help="Record stack traces (default: True)")
+    parser.add_argument("--profile_wait", type=int, default=1, help="Number of steps to wait before profiling")
+    parser.add_argument("--profile_warmup", type=int, default=1, help="Number of warmup steps")
+    parser.add_argument("--profile_active", type=int, default=5, help="Number of steps to actively profile")
+    parser.add_argument("--profile_cuda_only", action="store_true", help="Only profile CUDA operations")
 
     args = parser.parse_args()
 
@@ -940,18 +953,22 @@ def convert_hunyuan_to_framepack(lora_sd: dict[str, torch.Tensor]) -> dict[str, 
 
 
 def generate(
-    args: argparse.Namespace, gen_settings: GenerationSettings, shared_models: Optional[Dict] = None
+    args: argparse.Namespace, gen_settings: GenerationSettings, shared_models: Optional[Dict] = None, prof: Optional[torch.profiler.profile] = None, log_timing=None
 ) -> tuple[AutoencoderKLCausal3D, torch.Tensor]:
     """main function for generation
 
     Args:
         args: command line arguments
         shared_models: dictionary containing pre-loaded models
+        log_timing: timing log function
 
     Returns:
         tuple: (AutoencoderKLCausal3D model (vae), torch.Tensor generated latent)
     """
     device, dit_weight_dtype = (gen_settings.device, gen_settings.dit_weight_dtype)
+    
+    if log_timing:
+        log_timing("Starting generation function")
 
     # prepare seed
     seed = args.seed if args.seed is not None else random.randint(0, 2**32 - 1)
@@ -973,10 +990,14 @@ def generate(
 
     if shared_models is None or "model" not in shared_models:
         # load DiT model
+        if log_timing:
+            log_timing("Loading DiT model")
         model = load_dit_model(args, device)
 
         # merge LoRA weights
         if args.lora_weight is not None and len(args.lora_weight) > 0:
+            if log_timing:
+                log_timing("Merging LoRA weights")
             # ugly hack to common merge_lora_weights function
             merge_lora_weights(lora_framepack, model, args, device, convert_lora_for_framepack)
 
@@ -985,6 +1006,8 @@ def generate(
                 return None, None
 
         # optimize model: fp8 conversion, block swap etc.
+        if log_timing:
+            log_timing("Optimizing model (FP8)")
         optimize_model(model, args, device)
 
         if shared_models is not None:
@@ -1169,6 +1192,8 @@ def generate(
             context_for_index = context[prompt_index]
             # if args.section_prompts is not None:
             logger.info(f"Section {section_index}: {context_for_index['prompt']}")
+            if log_timing:
+                log_timing(f"Starting generation for section {section_index}")
 
             llama_vec = context_for_index["llama_vec"].to(device, dtype=torch.bfloat16)
             llama_attention_mask = context_for_index["llama_attention_mask"].to(device)
@@ -1228,6 +1253,11 @@ def generate(
                 real_history_latents = history_latents[:, :, -total_generated_latent_frames:, :, :]
 
             logger.info(f"Generated. Latent shape {real_history_latents.shape}")
+            if log_timing:
+                log_timing(f"Completed generation for section {section_index}")
+            
+            if prof is not None and hasattr(prof, 'step'):
+                prof.step()
 
             # # TODO support saving intermediate video
             # clean_memory_on_device(device)
@@ -1522,6 +1552,7 @@ def save_output(
     latent: torch.Tensor,
     device: torch.device,
     original_base_names: Optional[List[str]] = None,
+    log_timing=None,
 ) -> None:
     """save output
 
@@ -1542,11 +1573,15 @@ def save_output(
     if args.output_type == "latent":
         return
 
+    if log_timing:
+        log_timing("Starting video decoding")
     total_latent_sections = (args.video_seconds * 30) / (args.latent_window_size * 4)
     total_latent_sections = int(max(round(total_latent_sections), 1))
     video = decode_latent(
         args.latent_window_size, total_latent_sections, args.bulk_decode, vae, latent, device, args.one_frame_inference is not None
     )
+    if log_timing:
+        log_timing("Completed video decoding")
 
     if args.output_type == "video" or args.output_type == "both":
         # save video
@@ -1736,9 +1771,62 @@ def get_generation_settings(args: argparse.Namespace) -> GenerationSettings:
     return gen_settings
 
 
+# Global variable to track profiler state
+_profiler_stopped = False
+
+def stop_profiler_and_export(prof, profile_path):
+    """Stop profiler and export results"""
+    global _profiler_stopped
+    
+    if prof is not None and not _profiler_stopped:
+        try:
+            _profiler_stopped = True  # Mark as stopped before attempting to stop
+            prof.stop()
+            
+            # Generate timestamp for unique filename
+            time_flag = datetime.fromtimestamp(time.time()).strftime("%Y%m%d-%H%M%S")
+            
+            # Export the trace with timestamp
+            trace_filename = f"trace_{time_flag}.json"
+            trace_path = os.path.join(profile_path, trace_filename)
+            prof.export_chrome_trace(trace_path)
+            logger.info(f"Profiling stopped. Chrome trace saved to: {trace_path}")
+            
+            # Also export as tensorboard format
+            try:
+                stacks_filename = f"stacks_{time_flag}.txt"
+                stacks_path = os.path.join(profile_path, stacks_filename)
+                prof.export_stacks(stacks_path, "self_cuda_time_total")
+                logger.info(f"Stack traces saved to: {stacks_path}")
+            except Exception as e:
+                logger.warning(f"Could not export stack traces: {e}")
+                
+            logger.info(f"To view Chrome trace, open: chrome://tracing and load {trace_path}")
+            logger.info(f"To view with TensorBoard (if available), run: tensorboard --logdir {profile_path}")
+        except Exception as e:
+            logger.error(f"Error stopping profiler: {e}")
+    elif _profiler_stopped:
+        logger.debug("Profiler already stopped, skipping")
+
 def main():
     # Parse arguments
     args = parse_args()
+    
+    # Start time tracking and setup timing log
+    start_time = time.time()
+    timing_log_path = f"timing_log_{datetime.fromtimestamp(start_time).strftime('%Y%m%d-%H%M%S')}.txt"
+    
+    def log_timing(message):
+        elapsed = time.time() - start_time
+        with open(timing_log_path, 'a') as f:
+            f.write(f"[T+{elapsed:.2f}s] {message}\n")
+        logger.info(f"[T+{elapsed:.2f}s] {message}")
+    
+    log_timing("Process started")
+    
+    # Global variables for signal handling
+    global_prof = None
+    global_profile_path = None
 
     # Check if latents are provided
     latents_mode = args.latent_path is not None and len(args.latent_path) > 0
@@ -1748,6 +1836,58 @@ def main():
     device = torch.device(device)
     logger.info(f"Using device: {device}")
     args.device = device
+
+    # Setup profiler if enabled
+    prof = None
+    if args.profile:
+        os.makedirs(args.profile_path, exist_ok=True)
+        
+        # Configure activities
+        activities = []
+        if not args.profile_cuda_only:
+            activities.append(torch.profiler.ProfilerActivity.CPU)
+        activities.append(torch.profiler.ProfilerActivity.CUDA)
+        
+        # Create profiler with schedule or without
+        if args.profile_wait > 0 or args.profile_warmup > 0 or args.profile_active > 0:
+            prof = torch.profiler.profile(
+                activities=activities,
+                schedule=torch.profiler.schedule(
+                    wait=args.profile_wait,
+                    warmup=args.profile_warmup,
+                    active=args.profile_active,
+                    repeat=1
+                ),
+                on_trace_ready=torch.profiler.tensorboard_trace_handler(args.profile_path),
+                record_shapes=args.profile_shapes,
+                profile_memory=args.profile_memory,
+                with_stack=args.profile_stack
+            )
+        else:
+            prof = torch.profiler.profile(
+                activities=activities,
+                record_shapes=args.profile_shapes,
+                profile_memory=args.profile_memory,
+                with_stack=args.profile_stack
+            )
+        
+        prof.start()
+        logger.info(f"PyTorch profiling enabled. Output will be saved to: {args.profile_path}")
+        logger.info(f"Profiling config: shapes={args.profile_shapes}, memory={args.profile_memory}, "
+                   f"stack={args.profile_stack}, cuda_only={args.profile_cuda_only}")
+        
+        # Set global variables for signal handling
+        global_prof = prof
+        global_profile_path = args.profile_path
+        
+        # Register signal handlers but NOT atexit (to avoid double cleanup)
+        def signal_handler(signum, frame):
+            logger.info(f"Received signal {signum}, stopping profiler...")
+            stop_profiler_and_export(global_prof, global_profile_path)
+            exit(1)
+            
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
 
     if latents_mode:
         # Original latent decode mode
@@ -1794,7 +1934,8 @@ def main():
             args.seed = seeds[i]
 
             vae = load_vae(args.vae, args.vae_chunk_size, args.vae_spatial_tile_sample_min_size, device)
-            save_output(args, vae, latent, device, original_base_names)
+            
+            save_output(args, vae, latent, device, original_base_names, log_timing=log_timing)
 
     elif args.from_file:
         # Batch mode from file
@@ -1805,6 +1946,7 @@ def main():
 
         # Process prompts
         prompts_data = preprocess_prompts_for_batch(prompt_lines, args)
+        
         process_batch_prompts(prompts_data, args)
 
     elif args.interactive:
@@ -1816,15 +1958,23 @@ def main():
 
         # Generate latent
         gen_settings = get_generation_settings(args)
-        vae, latent = generate(args, gen_settings)
+        
+        vae, latent = generate(args, gen_settings, prof=prof, log_timing=log_timing)
         # print(f"Generated latent shape: {latent.shape}")
         if args.save_merged_model:
             return
 
         # Save latent and video
-        save_output(args, vae, latent[0], device)
+        save_output(args, vae, latent[0], device, None, log_timing)
 
+    # Stop profiler if enabled
+    if prof is not None:
+        # Only stop and export if not using schedule (schedule handles export automatically)
+        stop_profiler_and_export(prof, args.profile_path if args.profile else None)
+
+    log_timing("Process completed")
     logger.info("Done!")
+    logger.info(f"Timing log saved to: {timing_log_path}")
 
 
 if __name__ == "__main__":
