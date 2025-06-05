@@ -118,23 +118,23 @@ CLIP_CONFIG = {
 
 
 def load_text_encoder1(
-    args, fp8_llm: Optional[bool] = False, device: Optional[Union[str, torch.device]] = None
+    text_encoder1_path: str, fp8_llm: Optional[bool] = False, device: Optional[Union[str, torch.device]] = None
 ) -> tuple[LlamaTokenizerFast, LlamaModel]:
     # single file, split file and directory (contains 'text_encoder') support
     logger.info(f"Loading text encoder 1 tokenizer")
     tokenizer1 = LlamaTokenizerFast.from_pretrained("hunyuanvideo-community/HunyuanVideo", subfolder="tokenizer")
 
-    logger.info(f"Loading text encoder 1 from {args.text_encoder1}")
-    if os.path.isdir(args.text_encoder1):
+    logger.info(f"Loading text encoder 1 from {text_encoder1_path}")
+    if os.path.isdir(text_encoder1_path):
         # load from directory, configs are in the directory
-        text_encoder1 = LlamaModel.from_pretrained(args.text_encoder1, subfolder="text_encoder", torch_dtype=torch.float16)
+        text_encoder1 = LlamaModel.from_pretrained(text_encoder1_path, subfolder="text_encoder", torch_dtype=torch.float16)
     else:
         # load from file, we create the model with the appropriate config
         config = LlamaConfig(**LLAMA_CONFIG)
         with init_empty_weights():
             text_encoder1 = LlamaModel._from_config(config, torch_dtype=torch.float16)
 
-        state_dict = load_split_weights(args.text_encoder1)
+        state_dict = load_split_weights(text_encoder1_path)
 
         # support weights from ComfyUI
         if "model.embed_tokens.weight" in state_dict:
@@ -187,22 +187,22 @@ def load_text_encoder1(
     return tokenizer1, text_encoder1
 
 
-def load_text_encoder2(args) -> tuple[CLIPTokenizer, CLIPTextModel]:
+def load_text_encoder2(text_encoder2_path: str) -> tuple[CLIPTokenizer, CLIPTextModel]:
     # single file and directory (contains 'text_encoder_2') support
     logger.info(f"Loading text encoder 2 tokenizer")
     tokenizer2 = CLIPTokenizer.from_pretrained("hunyuanvideo-community/HunyuanVideo", subfolder="tokenizer_2")
 
-    logger.info(f"Loading text encoder 2 from {args.text_encoder2}")
-    if os.path.isdir(args.text_encoder2):
+    logger.info(f"Loading text encoder 2 from {text_encoder2_path}")
+    if os.path.isdir(text_encoder2_path):
         # load from directory, configs are in the directory
-        text_encoder2 = CLIPTextModel.from_pretrained(args.text_encoder2, subfolder="text_encoder_2", torch_dtype=torch.float16)
+        text_encoder2 = CLIPTextModel.from_pretrained(text_encoder2_path, subfolder="text_encoder_2", torch_dtype=torch.float16)
     else:
         # we only have one file, so we can load it directly
         config = CLIPConfig(**CLIP_CONFIG)
         with init_empty_weights():
             text_encoder2 = CLIPTextModel._from_config(config, torch_dtype=torch.float16)
 
-        state_dict = load_file(args.text_encoder2)
+        state_dict = load_file(text_encoder2_path)
 
         text_encoder2.load_state_dict(state_dict, strict=True, assign=True)
 

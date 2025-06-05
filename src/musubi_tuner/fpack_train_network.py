@@ -65,8 +65,8 @@ class FramePackNetworkTrainer(NetworkTrainer):
         prompts = load_prompts(sample_prompts)
 
         # load text encoder
-        tokenizer1, text_encoder1 = load_text_encoder1(args, args.fp8_llm, device)
-        tokenizer2, text_encoder2 = load_text_encoder2(args)
+        tokenizer1, text_encoder1 = load_text_encoder1(args.text_encoder1, args.fp8_llm, device)
+        tokenizer2, text_encoder2 = load_text_encoder2(args.text_encoder2)
         text_encoder2.to(device)
 
         sample_prompts_te_outputs = {}  # (prompt) -> (t1 embeds, t1 mask, t2 embeds)

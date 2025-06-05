@@ -621,8 +621,8 @@ def prepare_i2v_inputs(
         text_encoder1.to(device)
     else:
         # TODO: 58s
-        tokenizer1, text_encoder1 = load_text_encoder1(args, args.fp8_llm, device)
-        tokenizer2, text_encoder2 = load_text_encoder2(args)
+        tokenizer1, text_encoder1 = load_text_encoder1(args.text_encoder1, args.fp8_llm, device)
+        tokenizer2, text_encoder2 = load_text_encoder2(args.text_encoder2)
     text_encoder2.to(device)
 
     logger.info(f"Encoding prompt")
@@ -1619,8 +1619,8 @@ def load_shared_models(args: argparse.Namespace) -> Dict:
         Dict: Dictionary of shared models
     """
     shared_models = {}
-    tokenizer1, text_encoder1 = load_text_encoder1(args, args.fp8_llm, "cpu")
-    tokenizer2, text_encoder2 = load_text_encoder2(args)
+    tokenizer1, text_encoder1 = load_text_encoder1(args.text_encoder1, args.fp8_llm, "cpu")
+    tokenizer2, text_encoder2 = load_text_encoder2(args.text_encoder2)
     feature_extractor, image_encoder = load_image_encoders(args)
     vae = load_vae(args.vae, args.vae_chunk_size, args.vae_spatial_tile_sample_min_size, "cpu")
     shared_models["tokenizer1"] = tokenizer1

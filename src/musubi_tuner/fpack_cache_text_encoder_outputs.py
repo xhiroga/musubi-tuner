@@ -71,8 +71,8 @@ def main(args):
     all_cache_files_for_dataset, all_cache_paths_for_dataset = cache_text_encoder_outputs.prepare_cache_files_and_paths(datasets)
 
     # load text encoder
-    tokenizer1, text_encoder1 = load_text_encoder1(args, args.fp8_llm, device)
-    tokenizer2, text_encoder2 = load_text_encoder2(args)
+    tokenizer1, text_encoder1 = load_text_encoder1(args.text_encoder1, args.fp8_llm, device)
+    tokenizer2, text_encoder2 = load_text_encoder2(args.text_encoder2)
     text_encoder2.to(device)
 
     # Encode with Text Encoders
