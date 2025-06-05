@@ -223,10 +223,6 @@ def parse_args() -> argparse.Namespace:
     #     default=["inductor", "max-autotune-no-cudagraphs", "False", "False"],
     #     help="Torch.compile settings",
     # )
-
-    # New arguments for batch and interactive modes
-    parser.add_argument("--from_file", type=str, default=None, help="Read prompts from a file")
-    parser.add_argument("--interactive", action="store_true", help="Interactive mode: read prompts from console")
     
     # Profiling arguments
     parser.add_argument("--profile", action="store_true", help="Enable PyTorch profiling")
@@ -235,14 +231,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--profile_stack", action="store_true", default=True, help="Record stack traces (default: True)")
 
     args = parser.parse_args()
-
-    # Validate arguments
-    if args.from_file and args.interactive:
-        raise ValueError("Cannot use both --from_file and --interactive at the same time")
-
-    if args.latent_path is None or len(args.latent_path) == 0:
-        if args.prompt is None and not args.from_file and not args.interactive:
-            raise ValueError("Either --prompt, --from_file or --interactive must be specified")
 
     return args
 
@@ -632,6 +620,7 @@ def prepare_i2v_inputs(
         tokenizer2, text_encoder2 = shared_models["tokenizer2"], shared_models["text_encoder2"]
         text_encoder1.to(device)
     else:
+        # TODO: 58s
         tokenizer1, text_encoder1 = load_text_encoder1(args, args.fp8_llm, device)
         tokenizer2, text_encoder2 = load_text_encoder2(args)
     text_encoder2.to(device)
@@ -1643,117 +1632,6 @@ def load_shared_models(args: argparse.Namespace) -> Dict:
     return shared_models
 
 
-def process_batch_prompts(prompts_data: List[Dict], args: argparse.Namespace) -> None:
-    """Process multiple prompts with model reuse
-
-    Args:
-        prompts_data: List of prompt data dictionaries
-        args: Base command line arguments
-    """
-    if not prompts_data:
-        logger.warning("No valid prompts found")
-        return
-
-    # 1. Load configuration
-    gen_settings = get_generation_settings(args)
-    device = gen_settings.device
-
-    # 2. Load models to CPU in advance except for VAE and DiT
-    shared_models = load_shared_models(args)
-
-    # 3. Generate for each prompt
-    all_latents = []
-    all_prompt_args = []
-
-    with torch.no_grad():
-        for prompt_data in prompts_data:
-            prompt = prompt_data["prompt"]
-            prompt_args = apply_overrides(args, prompt_data)
-            logger.info(f"Processing prompt: {prompt}")
-
-            try:
-                vae, latent = generate(prompt_args, gen_settings, shared_models)
-
-                # Save latent if needed
-                if args.output_type == "latent" or args.output_type == "both" or args.output_type == "latent_images":
-                    height, width = latent.shape[-2], latent.shape[-1]  # BCTHW
-                    height *= 8
-                    width *= 8
-                    save_latent(latent, prompt_args, height, width)
-
-                all_latents.append(latent)
-                all_prompt_args.append(prompt_args)
-            except Exception as e:
-                logger.error(f"Error processing prompt: {prompt}. Error: {e}")
-                continue
-
-    # 4. Free models
-    if "model" in shared_models:
-        del shared_models["model"]
-    del shared_models["tokenizer1"]
-    del shared_models["text_encoder1"]
-    del shared_models["tokenizer2"]
-    del shared_models["text_encoder2"]
-    del shared_models["feature_extractor"]
-    del shared_models["image_encoder"]
-
-    clean_memory_on_device(device)
-    synchronize_device(device)
-
-    # 5. Decode latents if needed
-    if args.output_type != "latent":
-        logger.info("Decoding latents to videos/images")
-        vae.to(device)
-
-        for i, (latent, prompt_args) in enumerate(zip(all_latents, all_prompt_args)):
-            logger.info(f"Decoding output {i+1}/{len(all_latents)}")
-
-            # avoid saving latents again (ugly hack)
-            if prompt_args.output_type == "both":
-                prompt_args.output_type = "video"
-            elif prompt_args.output_type == "latent_images":
-                prompt_args.output_type = "images"
-
-            save_output(prompt_args, vae, latent[0], device)
-
-
-def process_interactive(args: argparse.Namespace) -> None:
-    """Process prompts in interactive mode
-
-    Args:
-        args: Base command line arguments
-    """
-    gen_settings = get_generation_settings(args)
-    device = gen_settings.device
-    shared_models = load_shared_models(args)
-
-    print("Interactive mode. Enter prompts (Ctrl+D or Ctrl+Z (Windows) to exit):")
-
-    try:
-        while True:
-            try:
-                line = input("> ")
-                if not line.strip():
-                    continue
-
-                # Parse prompt
-                prompt_data = parse_prompt_line(line)
-                prompt_args = apply_overrides(args, prompt_data)
-
-                # Generate latent
-                vae, latent = generate(prompt_args, gen_settings, shared_models)
-
-                # Save latent and video
-                save_output(prompt_args, vae, latent[0], device)
-
-            except KeyboardInterrupt:
-                print("\nInterrupted. Continue (Ctrl+D or Ctrl+Z (Windows) to exit)")
-                continue
-
-    except EOFError:
-        print("\nExiting interactive mode")
-
-
 def get_generation_settings(args: argparse.Namespace) -> GenerationSettings:
     device = torch.device(args.device)
 
@@ -1843,22 +1721,6 @@ def main(prof, log_dir):
             vae = load_vae(args.vae, args.vae_chunk_size, args.vae_spatial_tile_sample_min_size, device)
             
             save_output(args, vae, latent, device, original_base_names, log_timing=log_timing)
-
-    elif args.from_file:
-        # Batch mode from file
-
-        # Read prompts from file
-        with open(args.from_file, "r", encoding="utf-8") as f:
-            prompt_lines = f.readlines()
-
-        # Process prompts
-        prompts_data = preprocess_prompts_for_batch(prompt_lines, args)
-        
-        process_batch_prompts(prompts_data, args)
-
-    elif args.interactive:
-        # Interactive mode
-        process_interactive(args)
 
     else:
         # Single prompt mode (original behavior)
