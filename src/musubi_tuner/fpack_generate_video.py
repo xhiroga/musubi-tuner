@@ -608,6 +608,9 @@ def prepare_i2v_inputs(
         control_image_tensors = None
         control_mask_images = None
 
+    text_encoder1_path = args.text_encoder1
+    text_encoder2_path = args.text_encoder2
+
     # configure negative prompt
     n_prompt = args.negative_prompt if args.negative_prompt else ""
 
@@ -621,8 +624,8 @@ def prepare_i2v_inputs(
         text_encoder1.to(device)
     else:
         # TODO: 58s
-        tokenizer1, text_encoder1 = load_text_encoder1(args.text_encoder1, args.fp8_llm, device)
-        tokenizer2, text_encoder2 = load_text_encoder2(args.text_encoder2)
+        tokenizer1, text_encoder1 = load_text_encoder1(text_encoder1_path, args.fp8_llm, device)
+        tokenizer2, text_encoder2 = load_text_encoder2(text_encoder2_path)
     text_encoder2.to(device)
 
     logger.info(f"Encoding prompt")
