@@ -233,9 +233,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--profile_shapes", action="store_true", default=False, help="Record tensor shapes in profiling (default: False)")
     parser.add_argument("--profile_memory", action="store_true", default=True, help="Profile memory usage (default: True)")
     parser.add_argument("--profile_stack", action="store_true", default=True, help="Record stack traces (default: True)")
-    parser.add_argument("--profile_wait", type=int, default=1, help="Number of steps to wait before profiling")
-    parser.add_argument("--profile_warmup", type=int, default=1, help="Number of warmup steps")
-    parser.add_argument("--profile_active", type=int, default=5, help="Number of steps to actively profile")
 
     args = parser.parse_args()
 
@@ -1253,9 +1250,6 @@ def generate(
             if log_timing:
                 log_timing(f"Completed generation for section {section_index}")
             
-            if prof is not None and hasattr(prof, 'step'):
-                prof.step()
-
             # # TODO support saving intermediate video
             # clean_memory_on_device(device)
             # vae.to(device)
@@ -1271,6 +1265,8 @@ def generate(
             # #     # save intermediate video
             # #     save_video(history_pixels[0], args, total_generated_latent_frames)
             # print(f"Decoded. Current latent shape {real_history_latents.shape}; pixel shape {history_pixels.shape}")
+
+            # prof.step()
 
     # Only clean up shared models if they were created within this function
     if shared_models is None:
@@ -1769,7 +1765,7 @@ def get_generation_settings(args: argparse.Namespace) -> GenerationSettings:
     return gen_settings
 
 
-def main():
+def main(prof):
     # Parse arguments
     args = parse_args()
     
@@ -1794,36 +1790,8 @@ def main():
     logger.info(f"Using device: {device}")
     args.device = device
 
-    # Setup profiler if enabled
-    prof = None
-    if args.profile:
-        activities = [torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA]
-        
-        # Create profiler with schedule or without
-        if args.profile_wait > 0 or args.profile_warmup > 0 or args.profile_active > 0:
-            prof = torch.profiler.profile(
-                activities=activities,
-                schedule=torch.profiler.schedule(
-                    wait=args.profile_wait,
-                    warmup=args.profile_warmup,
-                    active=args.profile_active,
-                    repeat=1
-                ),
-                on_trace_ready=torch.profiler.tensorboard_trace_handler(args.save_path),
-                record_shapes=args.profile_shapes,
-                profile_memory=args.profile_memory,
-                with_stack=args.profile_stack
-            )
-        else:
-            prof = torch.profiler.profile(
-                activities=activities,
-                record_shapes=args.profile_shapes,
-                profile_memory=args.profile_memory,
-                with_stack=args.profile_stack
-            )
-        
-        prof.start()
-        logger.info(f"Profiling config: shapes={args.profile_shapes}, memory={args.profile_memory}, stack={args.profile_stack}")
+    prof.start()
+    logger.info(f"Profiling config: shapes={args.profile_shapes}, memory={args.profile_memory}, stack={args.profile_stack}")
 
     if latents_mode:
         # Original latent decode mode
@@ -1909,4 +1877,19 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+    activities = [torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA]
+    with torch.profiler.profile(
+        activities=activities,
+        # schedule=torch.profiler.schedule(
+        #     wait=1,
+        #     warmup=1,
+        #     active=5,
+        #     repeat=1
+        # ),
+        on_trace_ready=torch.profiler.tensorboard_trace_handler(f"{args.save_path}/profiles"),
+        record_shapes=args.profile_shapes,
+        profile_memory=args.profile_memory,
+        with_stack=args.profile_stack
+    ) as prof:
+        main(prof)
