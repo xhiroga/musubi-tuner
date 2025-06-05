@@ -1460,23 +1460,27 @@ def save_latent(latent: torch.Tensor, args: argparse.Namespace, height: int, wid
     if args.no_metadata:
         metadata = None
     else:
-        metadata = {
-            "seeds": f"{seed}",
-            "prompt": f"{args.prompt}",
-            "height": f"{height}",
-            "width": f"{width}",
-            "video_seconds": f"{video_seconds}",
-            "infer_steps": f"{args.infer_steps}",
-            "guidance_scale": f"{args.guidance_scale}",
-            "latent_window_size": f"{args.latent_window_size}",
-            "embedded_cfg_scale": f"{args.embedded_cfg_scale}",
-            "guidance_rescale": f"{args.guidance_rescale}",
-            "sample_solver": f"{args.sample_solver}",
-            "latent_window_size": f"{args.latent_window_size}",
-            "fps": f"{args.fps}",
-        }
-        if args.negative_prompt is not None:
-            metadata["negative_prompt"] = f"{args.negative_prompt}"
+        # Convert args to dictionary and select relevant fields
+        args_dict = vars(args)
+        metadata_fields = [
+            "prompt", "negative_prompt", "infer_steps", "guidance_scale",
+            "latent_window_size", "embedded_cfg_scale", "guidance_rescale",
+            "sample_solver", "fps", "image_path", "end_image_path",
+            "control_image_path", "control_image_mask_path", "one_frame_inference",
+            "f1", "rope_scaling_factor", "rope_scaling_timestep_threshold"
+        ]
+        
+        metadata = {}
+        # Add args fields
+        for field in metadata_fields:
+            if field in args_dict and args_dict[field] is not None:
+                metadata[field] = str(args_dict[field])
+        
+        # Add computed values
+        metadata["seeds"] = str(seed)
+        metadata["height"] = str(height)
+        metadata["width"] = str(width)
+        metadata["video_seconds"] = str(video_seconds)
 
     sd = {"latent": latent.contiguous()}
     save_file(sd, latent_path, metadata=metadata)
@@ -1894,4 +1898,5 @@ if __name__ == "__main__":
         profile_memory=args.profile_memory,
         with_stack=args.profile_stack
     ) as prof:
+        prof.add_metadata_json("args", json.dumps(vars(args), default=str))
         main(prof, log_dir)
