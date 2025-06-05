@@ -507,115 +507,68 @@ def decode_latent(
     return history_pixels[0]  # remove batch dimension
 
 
-def prepare_i2v_inputs(
-    args: argparse.Namespace,
-    device: torch.device,
-    vae: AutoencoderKLCausal3D,
-    shared_models: Optional[Dict] = None,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Tuple[dict, dict]]:
-    """Prepare inputs for I2V
+def parse_section_strings(input_string: str) -> dict[int, str]:
+    "define parsing function"
+    section_strings = {}
+    if ";;;" in input_string:
+        split_section_strings = input_string.split(";;;")
+        for section_str in split_section_strings:
+            if ":" not in section_str:
+                start = end = 0
+                section_str = section_str.strip()
+            else:
+                index_str, section_str = section_str.split(":", 1)
+                index_str = index_str.strip()
+                section_str = section_str.strip()
 
-    Args:
-        args: command line arguments
-        config: model configuration
-        device: device to use
-        vae: VAE model, used for image encoding
-        shared_models: dictionary containing pre-loaded models
-
-    Returns:
-        Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Tuple[dict, dict]]:
-            (noise, context, context_null, y, (arg_c, arg_null))
-    """
-
-    height, width, video_seconds = check_inputs(args)
-
-    # define parsing function
-    def parse_section_strings(input_string: str) -> dict[int, str]:
-        section_strings = {}
-        if ";;;" in input_string:
-            split_section_strings = input_string.split(";;;")
-            for section_str in split_section_strings:
-                if ":" not in section_str:
+                m = re.match(r"^(-?\d+)(-\d+)?$", index_str)
+                if m:
+                    start = int(m.group(1))
+                    end = int(m.group(2)[1:]) if m.group(2) is not None else start
+                else:
                     start = end = 0
                     section_str = section_str.strip()
-                else:
-                    index_str, section_str = section_str.split(":", 1)
-                    index_str = index_str.strip()
-                    section_str = section_str.strip()
-
-                    m = re.match(r"^(-?\d+)(-\d+)?$", index_str)
-                    if m:
-                        start = int(m.group(1))
-                        end = int(m.group(2)[1:]) if m.group(2) is not None else start
-                    else:
-                        start = end = 0
-                        section_str = section_str.strip()
-                for i in range(start, end + 1):
-                    section_strings[i] = section_str
-        else:
-            section_strings[0] = input_string
-
-        # assert 0 in section_prompts, "Section prompts must contain section 0"
-        if 0 not in section_strings:
-            # use smallest section index. prefer positive index over negative index
-            # if all section indices are negative, use the smallest negative index
-            indices = list(section_strings.keys())
-            if all(i < 0 for i in indices):
-                section_index = min(indices)
-            else:
-                section_index = min(i for i in indices if i >= 0)
-            section_strings[0] = section_strings[section_index]
-        return section_strings
-
-    # prepare image
-    def preprocess_image(image_path: str):
-        image = Image.open(image_path)
-        if image.mode == "RGBA":
-            alpha = image.split()[-1]
-        else:
-            alpha = None
-        image = image.convert("RGB")
-
-        image_np = np.array(image)  # PIL to numpy, HWC
-
-        image_np = image_video_dataset.resize_image_to_bucket(image_np, (width, height))
-        image_tensor = torch.from_numpy(image_np).float() / 127.5 - 1.0  # -1 to 1.0, HWC
-        image_tensor = image_tensor.permute(2, 0, 1)[None, :, None]  # HWC -> CHW -> NCFHW, N=1, C=3, F=1
-        return image_tensor, image_np, alpha
-
-    section_image_paths = parse_section_strings(args.image_path)
-
-    section_images = {}
-    for index, image_path in section_image_paths.items():
-        img_tensor, img_np, _ = preprocess_image(image_path)
-        section_images[index] = (img_tensor, img_np)
-
-    # check end image
-    if args.end_image_path is not None:
-        end_image_tensor, _, _ = preprocess_image(args.end_image_path)
+            for i in range(start, end + 1):
+                section_strings[i] = section_str
     else:
-        end_image_tensor = None
+        section_strings[0] = input_string
 
-    # check end images
-    if args.control_image_path is not None and len(args.control_image_path) > 0:
-        control_image_tensors = []
-        control_mask_images = []
-        for ctrl_image_path in args.control_image_path:
-            control_image_tensor, _, control_mask = preprocess_image(ctrl_image_path)
-            control_image_tensors.append(control_image_tensor)
-            control_mask_images.append(control_mask)
+    # assert 0 in section_prompts, "Section prompts must contain section 0"
+    if 0 not in section_strings:
+        # use smallest section index. prefer positive index over negative index
+        # if all section indices are negative, use the smallest negative index
+        indices = list(section_strings.keys())
+        if all(i < 0 for i in indices):
+            section_index = min(indices)
+        else:
+            section_index = min(i for i in indices if i >= 0)
+        section_strings[0] = section_strings[section_index]
+    return section_strings
+
+
+def preprocess_image(image_path: str, width, height) -> Tuple[torch.Tensor, np.ndarray, Optional[np.ndarray]]:
+    "prepare image"
+    image_file = Image.open(image_path)
+    if image_file.mode == "RGBA":
+        alpha = image_file.split()[-1]
     else:
-        control_image_tensors = None
-        control_mask_images = None
+        alpha = None
+    image = image_file.convert("RGB")
 
-    text_encoder1_path = args.text_encoder1
-    text_encoder2_path = args.text_encoder2
+    image_np = np.array(image)  # PIL to numpy, HWC
+
+    image_np = image_video_dataset.resize_image_to_bucket(image_np, (width, height))
+    image_tensor = torch.from_numpy(image_np).float() / 127.5 - 1.0  # -1 to 1.0, HWC
+    image_tensor = image_tensor.permute(2, 0, 1)[None, :, None]  # HWC -> CHW -> NCFHW, N=1, C=3, F=1
+    return image_tensor, image_np, alpha
+
+
+def encode_prompts(prompt, negative_prompt, text_encoder1_path, fp8_llm, text_encoder2_path, device, shared_models) -> tuple[dict, dict]:
+    # parse section prompts
+    section_prompts = parse_section_strings(prompt)
 
     # configure negative prompt
-    n_prompt = args.negative_prompt if args.negative_prompt else ""
-
-    # parse section prompts
-    section_prompts = parse_section_strings(args.prompt)
+    n_prompt = negative_prompt if negative_prompt else ""
 
     # load text encoder
     if shared_models is not None:
@@ -624,7 +577,7 @@ def prepare_i2v_inputs(
         text_encoder1.to(device)
     else:
         # TODO: 58s
-        tokenizer1, text_encoder1 = load_text_encoder1(text_encoder1_path, args.fp8_llm, device)
+        tokenizer1, text_encoder1 = load_text_encoder1(text_encoder1_path, fp8_llm, device)
         tokenizer2, text_encoder2 = load_text_encoder2(text_encoder2_path)
     text_encoder2.to(device)
 
@@ -664,6 +617,81 @@ def prepare_i2v_inputs(
         text_encoder2.to("cpu")
     del tokenizer1, text_encoder1, tokenizer2, text_encoder2  # do not free shared models
     clean_memory_on_device(device)
+
+    # prepare model input arguments
+    arg_c = {}
+    arg_null = {}
+    for index in llama_vecs.keys():
+        llama_vec = llama_vecs[index]
+        llama_attention_mask = llama_attention_masks[index]
+        clip_l_pooler = clip_l_poolers[index]
+        arg_c_i = {
+            "llama_vec": llama_vec,
+            "llama_attention_mask": llama_attention_mask,
+            "clip_l_pooler": clip_l_pooler,
+            "prompt": section_prompts[index],  # for debugging
+        }
+        arg_c[index] = arg_c_i
+
+    arg_null = {
+        "llama_vec": llama_vec_n,
+        "llama_attention_mask": llama_attention_mask_n,
+        "clip_l_pooler": clip_l_pooler_n,
+    }
+
+    return arg_c, arg_null
+
+
+def prepare_i2v_inputs(
+    args: argparse.Namespace,
+    device: torch.device,
+    vae: AutoencoderKLCausal3D,
+    shared_models: Optional[Dict] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Tuple[dict, dict]]:
+    """Prepare inputs for I2V
+
+    Args:
+        args: command line arguments
+        config: model configuration
+        device: device to use
+        vae: VAE model, used for image encoding
+        shared_models: dictionary containing pre-loaded models
+
+    Returns:
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Tuple[dict, dict]]:
+            (noise, context, context_null, y, (arg_c, arg_null))
+    """
+
+    height, width, video_seconds = check_inputs(args)
+
+    section_image_paths = parse_section_strings(args.image_path)
+
+    section_images = {}
+    for index, image_path in section_image_paths.items():
+        img_tensor, img_np, _ = preprocess_image(image_path, width, height)
+        section_images[index] = (img_tensor, img_np)
+
+    # check end image
+    if args.end_image_path is not None:
+        end_image_tensor, _, _ = preprocess_image(args.end_image_path, width, height)
+    else:
+        end_image_tensor = None
+
+    # check end images
+    if args.control_image_path is not None and len(args.control_image_path) > 0:
+        control_image_tensors = []
+        control_mask_images = []
+        for ctrl_image_path in args.control_image_path:
+            control_image_tensor, _, control_mask = preprocess_image(ctrl_image_path, width, height)
+            control_image_tensors.append(control_image_tensor)
+            control_mask_images.append(control_mask)
+    else:
+        control_image_tensors = None
+        control_mask_images = None
+
+    arg_c, arg_null = encode_prompts(
+        args.prompt, args.negative_prompt, args.text_encoder1, args.fp8_llm, args.text_encoder2, device, shared_models
+    )
 
     # region: load image encoder
     if shared_models is not None:
@@ -709,27 +737,6 @@ def prepare_i2v_inputs(
     vae.to("cpu")  # move VAE to CPU to save memory
     clean_memory_on_device(device)
     # endregion
-
-    # prepare model input arguments
-    arg_c = {}
-    arg_null = {}
-    for index in llama_vecs.keys():
-        llama_vec = llama_vecs[index]
-        llama_attention_mask = llama_attention_masks[index]
-        clip_l_pooler = clip_l_poolers[index]
-        arg_c_i = {
-            "llama_vec": llama_vec,
-            "llama_attention_mask": llama_attention_mask,
-            "clip_l_pooler": clip_l_pooler,
-            "prompt": section_prompts[index],  # for debugging
-        }
-        arg_c[index] = arg_c_i
-
-    arg_null = {
-        "llama_vec": llama_vec_n,
-        "llama_attention_mask": llama_attention_mask_n,
-        "clip_l_pooler": clip_l_pooler_n,
-    }
 
     arg_c_img = {}
     for index in section_images.keys():
