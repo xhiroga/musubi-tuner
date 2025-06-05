@@ -6,21 +6,16 @@ readme = "README.md"
 requires-python = ">=3.10, <3.11"
 dependencies = [
     "accelerate>=1.6.0",
-    "ascii-magic==2.3.0",
     "av==14.0.1",
     "bitsandbytes>=0.45.0",
     "diffusers>=0.32.1",
     "einops>=0.7.0",
     "huggingface-hub>=0.30.0",
-    "matplotlib>=3.10.0",
     "opencv-python>=4.10.0.84",
     "pillow>=10.2.0",
     "safetensors>=0.4.5",
     "sageattention>=1.0.6",
-    "tensorboard>=2.18.0",
     "toml>=0.10.2",
-    "torch>=2.5.1",
-    "torchvision>=0.20.1",
     "tqdm>=4.66.5",
     "transformers>=4.46.3",
     "voluptuous>=0.15.2",
@@ -29,11 +24,31 @@ dependencies = [
     "easydict==1.13",
 ]
 
+[project.optional-dependencies]
+cu124 = [
+    "pytorch-triton>=3.3.0",
+    "torch>=2.5.1",
+    "torchvision>=0.20.1",
+]
+cu128 = [
+    "pytorch-triton>=3.3.0",
+    "torch>=2.7.1",
+    "torchvision>=0.22.1",
+]
+
+[tool.uv]
+conflicts = [
+  [
+    { extra = "cu124" },
+    { extra = "cu128" },
+  ],
+]
+
 [dependency-groups]
 dev = [
-    "ascii-magic==2.3.0",
-    "matplotlib==3.10.0",
-    "tensorboard",
+  "ascii-magic==2.3.0",
+  "matplotlib==3.10.0",
+  "tensorboard",
 ]
 
 [build-system]
@@ -41,14 +56,25 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.uv.sources]
+pytorch-triton = [
+  { index = "pytorch-cu124", extra = "cu124" },
+  { index = "pytorch-cu128", extra = "cu128" }
+]
 torch = [
-  { index = "pytorch-cu124" },
+  { index = "pytorch-cu124", extra = "cu124" },
+  { index = "pytorch-cu128", extra = "cu128" },
 ]
 torchvision = [
-  { index = "pytorch-cu124" },
+  { index = "pytorch-cu124", extra = "cu124" },
+  { index = "pytorch-cu128", extra = "cu128" },
 ]
 
 [[tool.uv.index]]
 name = "pytorch-cu124"
 url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
 explicit = true

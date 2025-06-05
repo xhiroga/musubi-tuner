@@ -212,7 +212,7 @@ latentの事前キャッシュは必須です。以下のコマンドを使用�
 python src/musubi_tuner/cache_latents.py --dataset_config path/to/toml --vae path/to/ckpts/hunyuan-video-t2v-720p/vae/pytorch_model.pt --vae_chunk_size 32 --vae_tiling
 ```
 
-uvでインストールした場合は、`uv run python src/musubi_tuner/cache_latents.py ...`のように、`uv run`を先頭につけてください。以下のコマンドも同様です。
+uvでインストールした場合は、`uv run --extra cu124 python src/musubi_tuner/cache_latents.py ...`のように、`uv run --extra cu124`を先頭につけてください。CUDA 12.8に対応している場合は、`uv run --extra cu128`も利用可能です。以下のコマンドも同様です。
 
 その他のオプションは`python src/musubi_tuner/cache_latents.py --help`で確認できます。
 
