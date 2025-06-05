@@ -662,7 +662,7 @@ def prepare_i2v_inputs(
     del tokenizer1, text_encoder1, tokenizer2, text_encoder2  # do not free shared models
     clean_memory_on_device(device)
 
-    # load image encoder
+    # region: load image encoder
     if shared_models is not None:
         feature_extractor, image_encoder = shared_models["feature_extractor"], shared_models["image_encoder"]
     else:
@@ -683,8 +683,9 @@ def prepare_i2v_inputs(
         image_encoder.to("cpu")
     del image_encoder, feature_extractor
     clean_memory_on_device(device)
+    # endregion
 
-    # VAE encoding
+    # region: VAE encoding
     logger.info(f"Encoding image to latent space")
     vae.to(device)
 
@@ -704,6 +705,7 @@ def prepare_i2v_inputs(
 
     vae.to("cpu")  # move VAE to CPU to save memory
     clean_memory_on_device(device)
+    # endregion
 
     # prepare model input arguments
     arg_c = {}
