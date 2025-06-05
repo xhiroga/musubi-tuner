@@ -1765,13 +1765,12 @@ def get_generation_settings(args: argparse.Namespace) -> GenerationSettings:
     return gen_settings
 
 
-def main(prof):
+def main(prof, timestamp):
     # Parse arguments
     args = parse_args()
     
-    # Start time tracking and setup timing log
+    timing_log_path = f"{args.save_path}/profile/{timestamp}/timing.log"
     start_time = time.time()
-    timing_log_path = f"{args.save_path}/timing_log_{datetime.fromtimestamp(start_time).strftime('%Y%m%d-%H%M%S')}.txt"
     
     def log_timing(message):
         elapsed = time.time() - start_time
@@ -1878,6 +1877,7 @@ def main(prof):
 
 if __name__ == "__main__":
     args = parse_args()
+    timestamp = datetime.fromtimestamp(time.time()).strftime("%Y%m%d-%H%M%S")
     activities = [torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA]
     with torch.profiler.profile(
         activities=activities,
@@ -1887,9 +1887,9 @@ if __name__ == "__main__":
         #     active=5,
         #     repeat=1
         # ),
-        on_trace_ready=torch.profiler.tensorboard_trace_handler(f"{args.save_path}/profiles"),
+        on_trace_ready=torch.profiler.tensorboard_trace_handler(f"{args.save_path}/profiles/{timestamp}"),
         record_shapes=args.profile_shapes,
         profile_memory=args.profile_memory,
         with_stack=args.profile_stack
     ) as prof:
-        main(prof)
+        main(prof, timestamp)
