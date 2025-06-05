@@ -20,6 +20,7 @@ import numpy as np
 import torchvision.transforms.functional as TF
 from transformers import LlamaModel
 from tqdm import tqdm
+from diskcache import Cache
 
 from musubi_tuner.networks import lora_framepack
 from musubi_tuner.hunyuan_model.autoencoder_kl_causal_3d import AutoencoderKLCausal3D
@@ -223,13 +224,15 @@ def parse_args() -> argparse.Namespace:
     #     default=["inductor", "max-autotune-no-cudagraphs", "False", "False"],
     #     help="Torch.compile settings",
     # )
+
+    parser.add_argument("--cache_dir", type=str, default=None, help="Cache directory for models and data. Default is None (no cache).")
     
     # Profiling arguments
     parser.add_argument("--profile", action="store_true", help="Enable PyTorch profiling")
     parser.add_argument("--profile_shapes", action="store_true", default=False, help="Record tensor shapes in profiling (default: False)")
     parser.add_argument("--profile_memory", action="store_true", default=True, help="Profile memory usage (default: True)")
     parser.add_argument("--profile_stack", action="store_true", default=True, help="Record stack traces (default: True)")
-
+    
     args = parser.parse_args()
 
     return args
@@ -546,7 +549,7 @@ def parse_section_strings(input_string: str) -> dict[int, str]:
     return section_strings
 
 
-def preprocess_image(image_path: str, width, height) -> Tuple[torch.Tensor, np.ndarray, Optional[np.ndarray]]:
+def preprocess_image(image_path: str, width, height) -> Tuple[torch.Tensor, np.ndarray, Optional[Image.Image]]:
     "prepare image"
     image_file = Image.open(image_path)
     if image_file.mode == "RGBA":
@@ -563,7 +566,7 @@ def preprocess_image(image_path: str, width, height) -> Tuple[torch.Tensor, np.n
     return image_tensor, image_np, alpha
 
 
-def encode_prompts(prompt, negative_prompt, text_encoder1_path, fp8_llm, text_encoder2_path, device, shared_models) -> tuple[dict, dict]:
+def encode_prompts(text_encoder1_path, fp8_llm, text_encoder2_path, device, prompt, negative_prompt, custom_system_prompt, guidance_scale) -> tuple[dict, dict]:
     # parse section prompts
     section_prompts = parse_section_strings(prompt)
 
@@ -571,14 +574,8 @@ def encode_prompts(prompt, negative_prompt, text_encoder1_path, fp8_llm, text_en
     n_prompt = negative_prompt if negative_prompt else ""
 
     # load text encoder
-    if shared_models is not None:
-        tokenizer1, text_encoder1 = shared_models["tokenizer1"], shared_models["text_encoder1"]
-        tokenizer2, text_encoder2 = shared_models["tokenizer2"], shared_models["text_encoder2"]
-        text_encoder1.to(device)
-    else:
-        # TODO: 58s
-        tokenizer1, text_encoder1 = load_text_encoder1(text_encoder1_path, fp8_llm, device)
-        tokenizer2, text_encoder2 = load_text_encoder2(text_encoder2_path)
+    tokenizer1, text_encoder1 = load_text_encoder1(text_encoder1_path, fp8_llm, device)
+    tokenizer2, text_encoder2 = load_text_encoder2(text_encoder2_path)
     text_encoder2.to(device)
 
     logger.info(f"Encoding prompt")
@@ -588,7 +585,7 @@ def encode_prompts(prompt, negative_prompt, text_encoder1_path, fp8_llm, text_en
     with torch.autocast(device_type=device.type, dtype=text_encoder1.dtype), torch.no_grad():
         for index, prompt in section_prompts.items():
             llama_vec, clip_l_pooler = hunyuan.encode_prompt_conds(
-                prompt, text_encoder1, text_encoder2, tokenizer1, tokenizer2, custom_system_prompt=args.custom_system_prompt
+                prompt, text_encoder1, text_encoder2, tokenizer1, tokenizer2, custom_system_prompt=custom_system_prompt
             )
             llama_vec = llama_vec.cpu()
             clip_l_pooler = clip_l_pooler.cpu()
@@ -599,7 +596,7 @@ def encode_prompts(prompt, negative_prompt, text_encoder1_path, fp8_llm, text_en
             llama_attention_masks[index] = llama_attention_mask
             clip_l_poolers[index] = clip_l_pooler
 
-    if args.guidance_scale == 1.0:
+    if guidance_scale == 1.0:
         llama_vec_n, clip_l_pooler_n = torch.zeros_like(llama_vecs[0]), torch.zeros_like(clip_l_poolers[0])
     else:
         with torch.autocast(device_type=device.type, dtype=text_encoder1.dtype), torch.no_grad():
@@ -612,9 +609,6 @@ def encode_prompts(prompt, negative_prompt, text_encoder1_path, fp8_llm, text_en
     llama_vec_n, llama_attention_mask_n = crop_or_pad_yield_mask(llama_vec_n, length=512)
 
     # free text encoder and clean memory
-    if shared_models is not None:  # if shared models are used, do not free them but move to CPU
-        text_encoder1.to("cpu")
-        text_encoder2.to("cpu")
     del tokenizer1, text_encoder1, tokenizer2, text_encoder2  # do not free shared models
     clean_memory_on_device(device)
 
@@ -645,9 +639,8 @@ def encode_prompts(prompt, negative_prompt, text_encoder1_path, fp8_llm, text_en
 def prepare_i2v_inputs(
     args: argparse.Namespace,
     device: torch.device,
-    vae: AutoencoderKLCausal3D,
-    shared_models: Optional[Dict] = None,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Tuple[dict, dict]]:
+    vae: AutoencoderKLCausal3D
+) -> tuple[int, int, int, Any | dict[Any, Any], Any | dict[Any, Any], dict[int, dict[str, Any]], torch.Tensor | None, list[torch.Tensor], list[Image.Image | None] | None]:
     """Prepare inputs for I2V
 
     Args:
@@ -689,15 +682,16 @@ def prepare_i2v_inputs(
         control_image_tensors = None
         control_mask_images = None
 
-    arg_c, arg_null = encode_prompts(
-        args.prompt, args.negative_prompt, args.text_encoder1, args.fp8_llm, args.text_encoder2, device, shared_models
-    )
+    cache = None
+    if args.cache_dir is not None:
+        cache = Cache(args.cache_dir)
+
+    logger.info(f"{cache=}")
+    encode_prompts_decorated = cache.memoize()(encode_prompts) if cache else encode_prompts
+    arg_c, arg_null = encode_prompts_decorated(args.text_encoder1, args.fp8_llm, args.text_encoder2, device, args.prompt, args.negative_prompt, args.custom_system_prompt, args.guidance_scale)
 
     # region: load image encoder
-    if shared_models is not None:
-        feature_extractor, image_encoder = shared_models["feature_extractor"], shared_models["image_encoder"]
-    else:
-        feature_extractor, image_encoder = load_image_encoders(args)
+    feature_extractor, image_encoder = load_image_encoders(args)
     image_encoder.to(device)
 
     # encode image with image encoder
@@ -710,8 +704,7 @@ def prepare_i2v_inputs(
         section_image_encoder_last_hidden_states[index] = image_encoder_last_hidden_state
 
     # free image encoder and clean memory
-    if shared_models is not None:
-        image_encoder.to("cpu")
+    image_encoder.to("cpu")
     del image_encoder, feature_extractor
     clean_memory_on_device(device)
     # endregion
@@ -948,7 +941,7 @@ def convert_hunyuan_to_framepack(lora_sd: dict[str, torch.Tensor]) -> dict[str, 
 
 
 def generate(
-    args: argparse.Namespace, gen_settings: GenerationSettings, shared_models: Optional[Dict] = None, prof: Optional[torch.profiler.profile] = None, log_timing=None
+    args: argparse.Namespace, gen_settings: GenerationSettings, prof: Optional[torch.profiler.profile] = None, log_timing=None
 ) -> tuple[AutoencoderKLCausal3D, torch.Tensor]:
     """main function for generation
 
@@ -969,49 +962,31 @@ def generate(
     seed = args.seed if args.seed is not None else random.randint(0, 2**32 - 1)
     args.seed = seed  # set seed to args for saving
 
-    # Check if we have shared models
-    if shared_models is not None:
-        # Use shared models and encoded data
-        vae = shared_models.get("vae")
-        height, width, video_seconds, context, context_null, context_img, end_latent, control_latents, control_mask_images = (
-            prepare_i2v_inputs(args, device, vae, shared_models)
-        )
-    else:
-        # prepare inputs without shared models
-        vae = load_vae(args.vae, args.vae_chunk_size, args.vae_spatial_tile_sample_min_size, device)
-        height, width, video_seconds, context, context_null, context_img, end_latent, control_latents, control_mask_images = (
-            prepare_i2v_inputs(args, device, vae)
-        )
+    vae = load_vae(args.vae, args.vae_chunk_size, args.vae_spatial_tile_sample_min_size, device)
+    height, width, video_seconds, context, context_null, context_img, end_latent, control_latents, control_mask_images = (
+        prepare_i2v_inputs(args, device, vae)
+    )
 
-    if shared_models is None or "model" not in shared_models:
-        # load DiT model
+    # load DiT model
+    if log_timing:
+        log_timing("Loading DiT model")
+    model = load_dit_model(args, device)
+
+    # merge LoRA weights
+    if args.lora_weight is not None and len(args.lora_weight) > 0:
         if log_timing:
-            log_timing("Loading DiT model")
-        model = load_dit_model(args, device)
+            log_timing("Merging LoRA weights")
+        # ugly hack to common merge_lora_weights function
+        merge_lora_weights(lora_framepack, model, args, device, convert_lora_for_framepack)
 
-        # merge LoRA weights
-        if args.lora_weight is not None and len(args.lora_weight) > 0:
-            if log_timing:
-                log_timing("Merging LoRA weights")
-            # ugly hack to common merge_lora_weights function
-            merge_lora_weights(lora_framepack, model, args, device, convert_lora_for_framepack)
+        # if we only want to save the model, we can skip the rest
+        if args.save_merged_model:
+            return None, None
 
-            # if we only want to save the model, we can skip the rest
-            if args.save_merged_model:
-                return None, None
-
-        # optimize model: fp8 conversion, block swap etc.
-        if log_timing:
-            log_timing("Optimizing model (FP8)")
-        optimize_model(model, args, device)
-
-        if shared_models is not None:
-            shared_models["model"] = model
-    else:
-        # use shared model
-        model: HunyuanVideoTransformer3DModelPacked = shared_models["model"]
-        model.move_to_device_except_swap_blocks(device)
-        model.prepare_block_swap_before_forward()
+    # optimize model: fp8 conversion, block swap etc.
+    if log_timing:
+        log_timing("Optimizing model (FP8)")
+    optimize_model(model, args, device)
 
     # sampling
     latent_window_size = args.latent_window_size  # default is 9
@@ -1269,13 +1244,8 @@ def generate(
 
             # prof.step()
 
-    # Only clean up shared models if they were created within this function
-    if shared_models is None:
-        del model  # free memory
-        synchronize_device(device)
-    else:
-        # move model to CPU to save memory
-        model.to("cpu")
+    del model  # free memory
+    synchronize_device(device)
 
     # wait for 5 seconds until block swap is done
     if args.blocks_to_swap > 0:
