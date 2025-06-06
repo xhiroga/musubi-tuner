@@ -567,10 +567,7 @@ def preprocess_image(image_path: str, width, height) -> Tuple[torch.Tensor, np.n
 
 
 def encode_prompts(text_encoder1_path, fp8_llm, text_encoder2_path, device, prompt, negative_prompt, custom_system_prompt, guidance_scale) -> tuple[dict, dict]:
-    # parse section prompts
     section_prompts = parse_section_strings(prompt)
-
-    # configure negative prompt
     n_prompt = negative_prompt if negative_prompt else ""
 
     # load text encoder
@@ -685,9 +682,9 @@ def prepare_i2v_inputs(
     cache = None
     if args.cache_dir is not None:
         cache = Cache(args.cache_dir)
+        logger.info(f"{cache.count=}")
 
-    logger.info(f"{cache=}")
-    encode_prompts_decorated = cache.memoize()(encode_prompts) if cache else encode_prompts
+    encode_prompts_decorated = cache.memoize()(encode_prompts) if cache is not None else encode_prompts # NOTE: Initialized cache has count: 0 and it is Falsy!
     arg_c, arg_null = encode_prompts_decorated(args.text_encoder1, args.fp8_llm, args.text_encoder2, device, args.prompt, args.negative_prompt, args.custom_system_prompt, args.guidance_scale)
 
     # region: load image encoder
