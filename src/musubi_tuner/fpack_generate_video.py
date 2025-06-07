@@ -83,6 +83,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Save merged model to path. If specified, no inference will be performed.",
     )
+    parser.add_argument("--optimized_model_dir", type=str, required=True, help="Optimized model directory")
 
     # inference
     parser.add_argument(
@@ -355,7 +356,7 @@ def check_inputs(args: argparse.Namespace) -> Tuple[int, int, int]:
 # region DiT model
 
 
-def load_dit_model(args: argparse.Namespace, device: torch.device) -> HunyuanVideoTransformer3DModelPacked:
+def load_dit_model(blocks_to_swap: int, fp8_scaled: bool, lora_weight: list[str], dit_path: str, attn_mode: str, rope_scaling_timestep_threshold: int, rope_scaling_factor: float, device: torch.device) -> HunyuanVideoTransformer3DModelPacked:
     """load DiT model
 
     Args:
@@ -368,18 +369,18 @@ def load_dit_model(args: argparse.Namespace, device: torch.device) -> HunyuanVid
         HunyuanVideoTransformer3DModelPacked: DiT model
     """
     loading_device = "cpu"
-    if args.blocks_to_swap == 0 and not args.fp8_scaled and args.lora_weight is None:
+    if blocks_to_swap == 0 and not fp8_scaled and lora_weight is None:
         loading_device = device
 
     # do not fp8 optimize because we will merge LoRA weights
-    model = load_packed_model(device, args.dit, args.attn_mode, loading_device)
+    model = load_packed_model(device, dit_path, attn_mode, loading_device)
 
     # apply RoPE scaling factor
-    if args.rope_scaling_timestep_threshold is not None:
+    if rope_scaling_timestep_threshold is not None:
         logger.info(
-            f"Applying RoPE scaling factor {args.rope_scaling_factor} for timesteps >= {args.rope_scaling_timestep_threshold}"
+            f"Applying RoPE scaling factor {rope_scaling_factor} for timesteps >= {rope_scaling_timestep_threshold}"
         )
-        model.enable_rope_scaling(args.rope_scaling_timestep_threshold, args.rope_scaling_factor)
+        model.enable_rope_scaling(rope_scaling_timestep_threshold, rope_scaling_factor)
     return model
 
 
@@ -937,6 +938,38 @@ def convert_hunyuan_to_framepack(lora_sd: dict[str, torch.Tensor]) -> dict[str, 
     return new_lora_sd
 
 
+def load_optimized_dit_model_with_lora(dit_path: str, fp8_scaled: bool, lora_weight: list[str], blocks_to_swap: int, attn_mode: str, rope_scaling_timestep_threshold: int, rope_scaling_factor: float, optimized_model_dir: str, device: torch.device):
+    """load_optimized_dit_model_with_lora
+
+    1. dit_path, lora_weight, lora_multiplier, fp8_scaled の値に応じたモデルを取得。モデルはディスクに保存し、メモ化を図る。
+    """
+    model = load_dit_model(blocks_to_swap, fp8_scaled, lora_weight, dit_path, attn_mode, rope_scaling_timestep_threshold, rope_scaling_factor, device)
+
+    # merge LoRA weights
+    if args.lora_weight is not None and len(args.lora_weight) > 0:
+        # ugly hack to common merge_lora_weights function
+        merge_lora_weights(
+            lora_framepack,
+            model,
+            device,
+            args.lora_weight,
+            args.lora_multiplier,
+            args.include_patterns,
+            args.exclude_patterns,
+            args.lycoris,
+            args.save_merged_model,
+            None  # converter
+        )
+
+        # if we only want to save the model, we can skip the rest
+        if args.save_merged_model:
+            return None, None
+
+    # optimize model: fp8 conversion, block swap etc.
+    optimize_model(model, args, device)
+    return model
+
+
 def generate(
     args: argparse.Namespace, gen_settings: GenerationSettings, prof: Optional[torch.profiler.profile] = None, log_timing=None
 ) -> tuple[AutoencoderKLCausal3D, torch.Tensor]:
@@ -950,7 +983,7 @@ def generate(
     Returns:
         tuple: (AutoencoderKLCausal3D model (vae), torch.Tensor generated latent)
     """
-    device, dit_weight_dtype = (gen_settings.device, gen_settings.dit_weight_dtype)
+    device, _dit_weight_dtype = (gen_settings.device, gen_settings.dit_weight_dtype)
     
     if log_timing:
         log_timing("Starting generation function")
@@ -964,26 +997,17 @@ def generate(
         prepare_i2v_inputs(args, device, vae)
     )
 
-    # load DiT model
-    if log_timing:
-        log_timing("Loading DiT model")
-    model = load_dit_model(args, device)
-
-    # merge LoRA weights
-    if args.lora_weight is not None and len(args.lora_weight) > 0:
-        if log_timing:
-            log_timing("Merging LoRA weights")
-        # ugly hack to common merge_lora_weights function
-        merge_lora_weights(lora_framepack, model, args, device, convert_lora_for_framepack)
-
-        # if we only want to save the model, we can skip the rest
-        if args.save_merged_model:
-            return None, None
-
-    # optimize model: fp8 conversion, block swap etc.
-    if log_timing:
-        log_timing("Optimizing model (FP8)")
-    optimize_model(model, args, device)
+    model = load_optimized_dit_model_with_lora(
+        args.dit,
+        args.fp8_scaled,
+        args.lora_weight,
+        args.blocks_to_swap,
+        args.attn_mode,
+        args.rope_scaling_timestep_threshold,
+        args.rope_scaling_factor,
+        args.optimized_model_dir,
+        device
+    )
 
     # sampling
     latent_window_size = args.latent_window_size  # default is 9

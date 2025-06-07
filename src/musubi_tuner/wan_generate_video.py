@@ -496,8 +496,13 @@ def load_dit_model(
 def merge_lora_weights(
     lora_module: ModuleType,
     model: torch.nn.Module,
-    args: argparse.Namespace,
     device: torch.device,
+    lora_weight: Optional[List[str]] = None,
+    lora_multiplier: Optional[List[float]] = None,
+    include_patterns: Optional[List[str]] = None,
+    exclude_patterns: Optional[List[str]] = None,
+    lycoris: bool = False,
+    save_merged_model: Optional[str] = None,
     converter: Optional[callable] = None,
 ) -> None:
     """merge LoRA weights to the model
@@ -505,34 +510,39 @@ def merge_lora_weights(
     Args:
         lora_module: LoRA module, e.g. lora_wan
         model: DiT model
-        args: command line arguments
         device: device to use
+        lora_weight: List of paths to LoRA weight files
+        lora_multiplier: List of multipliers for each LoRA weight
+        include_patterns: List of regex patterns to include keys
+        exclude_patterns: List of regex patterns to exclude keys
+        lycoris: Whether to use LyCORIS for merging
+        save_merged_model: Path to save the merged model
         converter: Optional callable to convert weights
     """
-    if args.lora_weight is None or len(args.lora_weight) == 0:
+    if lora_weight is None or len(lora_weight) == 0:
         return
 
-    for i, lora_weight in enumerate(args.lora_weight):
-        if args.lora_multiplier is not None and len(args.lora_multiplier) > i:
-            lora_multiplier = args.lora_multiplier[i]
+    for i, weight in enumerate(lora_weight):
+        if lora_multiplier is not None and len(lora_multiplier) > i:
+            multiplier = lora_multiplier[i]
         else:
-            lora_multiplier = 1.0
+            multiplier = 1.0
 
-        logger.info(f"Loading LoRA weights from {lora_weight} with multiplier {lora_multiplier}")
-        weights_sd = load_file(lora_weight)
+        logger.info(f"Loading LoRA weights from {weight} with multiplier {multiplier}")
+        weights_sd = load_file(weight)
         if converter is not None:
             weights_sd = converter(weights_sd)
 
         # apply include/exclude patterns
         original_key_count = len(weights_sd.keys())
-        if args.include_patterns is not None and len(args.include_patterns) > i:
-            include_pattern = args.include_patterns[i]
+        if include_patterns is not None and len(include_patterns) > i:
+            include_pattern = include_patterns[i]
             regex_include = re.compile(include_pattern)
             weights_sd = {k: v for k, v in weights_sd.items() if regex_include.search(k)}
             logger.info(f"Filtered keys with include pattern {include_pattern}: {original_key_count} -> {len(weights_sd.keys())}")
-        if args.exclude_patterns is not None and len(args.exclude_patterns) > i:
+        if exclude_patterns is not None and len(exclude_patterns) > i:
             original_key_count_ex = len(weights_sd.keys())
-            exclude_pattern = args.exclude_patterns[i]
+            exclude_pattern = exclude_patterns[i]
             regex_exclude = re.compile(exclude_pattern)
             weights_sd = {k: v for k, v in weights_sd.items() if not regex_exclude.search(k)}
             logger.info(
@@ -545,9 +555,9 @@ def merge_lora_weights(
             if len(weights_sd) == 0:
                 logger.warning(f"No keys left after filtering.")
 
-        if args.lycoris:
+        if lycoris:
             lycoris_net, _ = create_network_from_weights(
-                multiplier=lora_multiplier,
+                multiplier=multiplier,
                 file=None,
                 weights_sd=weights_sd,
                 unet=model,
@@ -557,16 +567,16 @@ def merge_lora_weights(
             )
             lycoris_net.merge_to(None, model, weights_sd, dtype=None, device=device)
         else:
-            network = lora_module.create_arch_network_from_weights(lora_multiplier, weights_sd, unet=model, for_inference=True)
+            network = lora_module.create_arch_network_from_weights(multiplier, weights_sd, unet=model, for_inference=True)
             network.merge_to(None, model, weights_sd, device=device, non_blocking=True)
 
         synchronize_device(device)
         logger.info("LoRA weights loaded")
 
     # save model here before casting to dit_weight_dtype
-    if args.save_merged_model:
-        logger.info(f"Saving merged model to {args.save_merged_model}")
-        mem_eff_save_file(model.state_dict(), args.save_merged_model)  # save_file needs a lot of memory
+    if save_merged_model:
+        logger.info(f"Saving merged model to {save_merged_model}")
+        mem_eff_save_file(model.state_dict(), save_merged_model)  # save_file needs a lot of memory
         logger.info("Merged model saved")
 
 
@@ -1193,7 +1203,7 @@ def generate(args: argparse.Namespace, gen_settings: GenerationSettings, shared_
 
         # merge LoRA weights
         if args.lora_weight is not None and len(args.lora_weight) > 0:
-            merge_lora_weights(lora_wan, model, args, device)
+            merge_lora_weights(lora_wan, model, device, args.lora_weight, args.lora_multiplier, args.include_patterns, args.exclude_patterns, args.lycoris, args.save_merged_model)
 
             # if we only want to save the model, we can skip the rest
             if args.save_merged_model:
@@ -1520,7 +1530,7 @@ def process_batch_prompts(prompts_data: List[Dict], args: argparse.Namespace) ->
 
     # 5. Merge LoRA weights if needed
     if args.lora_weight is not None and len(args.lora_weight) > 0:
-        merge_lora_weights(lora_wan, model, args, device)
+        merge_lora_weights(lora_wan, model, device, args.lora_weight, args.lora_multiplier, args.include_patterns, args.exclude_patterns, args.lycoris, args.save_merged_model)
         if args.save_merged_model:
             logger.info("Model merged and saved. Exiting.")
             return
@@ -1692,7 +1702,7 @@ def process_interactive(args: argparse.Namespace) -> None:
 
                     # Merge LoRA weights if needed
                     if args.lora_weight is not None and len(args.lora_weight) > 0:
-                        merge_lora_weights(lora_wan, model, args, device)
+                        merge_lora_weights(lora_wan, model, device, args.lora_weight, args.lora_multiplier, args.include_patterns, args.exclude_patterns, args.lycoris, args.save_merged_model)
 
                     # Optimize model
                     optimize_model(model, args, device, dit_dtype, dit_weight_dtype)
