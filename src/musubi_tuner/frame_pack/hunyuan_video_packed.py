@@ -2036,3 +2036,34 @@ def load_packed_model(
     logger.info(f"Loaded DiT model from {dit_path}, info={info}")
 
     return model
+
+
+def create_packed_model_empty(attn_mode: str, split_attn: bool = False) -> HunyuanVideoTransformer3DModelPacked:
+    """Create HunyuanVideoTransformer3DModelPacked architecture without loading weights"""
+    with init_empty_weights():
+        logger.info(f"Creating HunyuanVideoTransformer3DModelPacked architecture only")
+        model = HunyuanVideoTransformer3DModelPacked(
+            attention_head_dim=128,
+            guidance_embeds=True,
+            has_clean_x_embedder=True,
+            has_image_proj=True,
+            image_proj_dim=1152,
+            in_channels=16,
+            mlp_ratio=4.0,
+            num_attention_heads=24,
+            num_layers=20,
+            num_refiner_layers=2,
+            num_single_layers=40,
+            out_channels=16,
+            patch_size=2,
+            patch_size_t=1,
+            pooled_projection_dim=768,
+            qk_norm="rms_norm",
+            rope_axes_dim=(16, 56, 56),
+            rope_theta=256.0,
+            text_embed_dim=4096,
+            attn_mode=attn_mode,
+            split_attn=split_attn,
+        )
+    return model
+

@@ -1,49 +1,52 @@
 import argparse
-from datetime import datetime
+import copy
 import gc
+import hashlib
 import json
-import random
+import logging
 import os
+import random
 import re
 import time
-import math
-import copy
-from typing import Tuple, Optional, List, Union, Any, Dict
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import torch
 import torch.profiler
-from safetensors.torch import load_file, save_file
-from safetensors import safe_open
-from PIL import Image
-import cv2
-import numpy as np
-import torchvision.transforms.functional as TF
-from transformers import LlamaModel
-from tqdm import tqdm
 from diskcache import Cache
+from PIL import Image
+from safetensors import safe_open
+from safetensors.torch import load_file
+from tqdm import tqdm
 
-from musubi_tuner.networks import lora_framepack
-from musubi_tuner.hunyuan_model.autoencoder_kl_causal_3d import AutoencoderKLCausal3D
-from musubi_tuner.frame_pack import hunyuan
-from musubi_tuner.frame_pack.hunyuan_video_packed import HunyuanVideoTransformer3DModelPacked, load_packed_model
-from musubi_tuner.frame_pack.utils import crop_or_pad_yield_mask, resize_and_center_crop, soft_append_bcthw
-from musubi_tuner.frame_pack.bucket_tools import find_nearest_bucket
-from musubi_tuner.frame_pack.clip_vision import hf_clip_vision_encode
-from musubi_tuner.frame_pack.k_diffusion_hunyuan import sample_hunyuan
 from musubi_tuner.dataset import image_video_dataset
-
-try:
-    from lycoris.kohya import create_network_from_weights
-except:
-    pass
-
+from musubi_tuner.frame_pack import hunyuan
+from musubi_tuner.frame_pack.clip_vision import hf_clip_vision_encode
+from musubi_tuner.frame_pack.framepack_utils import (
+    load_image_encoders,
+    load_text_encoder1,
+    load_text_encoder2,
+    load_vae,
+)
+from musubi_tuner.frame_pack.hunyuan_video_packed import (
+    HunyuanVideoTransformer3DModelPacked,
+    create_packed_model_empty,
+    load_packed_model,
+)
+from musubi_tuner.frame_pack.k_diffusion_hunyuan import sample_hunyuan
+from musubi_tuner.frame_pack.utils import crop_or_pad_yield_mask, soft_append_bcthw
+from musubi_tuner.hunyuan_model.autoencoder_kl_causal_3d import AutoencoderKLCausal3D
+from musubi_tuner.hv_generate_video import (
+    save_images_grid,
+    save_videos_grid,
+    synchronize_device,
+)
+from musubi_tuner.modules.fp8_optimization_utils import apply_fp8_monkey_patch
+from musubi_tuner.networks import lora_framepack
 from musubi_tuner.utils.device_utils import clean_memory_on_device
-from musubi_tuner.hv_generate_video import save_images_grid, save_videos_grid, synchronize_device
+from musubi_tuner.utils.safetensors_utils import mem_eff_save_file
 from musubi_tuner.wan_generate_video import merge_lora_weights
-from musubi_tuner.frame_pack.framepack_utils import load_vae, load_text_encoder1, load_text_encoder2, load_image_encoders
-from musubi_tuner.dataset.image_video_dataset import load_video
-
-import logging
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -356,6 +359,23 @@ def check_inputs(args: argparse.Namespace) -> Tuple[int, int, int]:
 # region DiT model
 
 
+def generate_optimized_model_filename(dit_path: str, lora_weight: list[str], lora_multiplier: list[float], fp8: bool, fp8_scaled: bool) -> str:
+    key_parts = [
+        f"dit:{os.path.basename(dit_path)}",
+    ]    
+    if lora_weight:
+        for i, (lora_path, multiplier) in enumerate(zip(lora_weight, lora_multiplier)):
+            key_parts.append(f"lora{i}:{os.path.basename(lora_path)}@{multiplier}")
+    
+    key_string = "_".join(key_parts)
+    hash_digest = hashlib.sha256(key_string.encode()).hexdigest()[:8]
+    
+    base_name = os.path.splitext(os.path.basename(dit_path))[0]
+    fp8_suffix = "_fp8s" if fp8_scaled else "_fp8" if fp8 else ""
+    
+    return f"{base_name}_{hash_digest}{fp8_suffix}.safetensors"
+
+
 def load_dit_model(blocks_to_swap: int, fp8_scaled: bool, lora_weight: list[str], dit_path: str, attn_mode: str, rope_scaling_timestep_threshold: int, rope_scaling_factor: float, device: torch.device) -> HunyuanVideoTransformer3DModelPacked:
     """load DiT model
 
@@ -411,7 +431,7 @@ def optimize_model(model: HunyuanVideoTransformer3DModelPacked, args: argparse.N
         target_device = None
 
         if args.fp8:
-            target_dtype = torch.float8e4m3fn
+            target_dtype = torch.float8_e4m3fn
 
         if args.blocks_to_swap == 0:
             logger.info(f"Move model to device: {device}")
@@ -446,6 +466,59 @@ def optimize_model(model: HunyuanVideoTransformer3DModelPacked, args: argparse.N
 
     model.eval().requires_grad_(False)
     clean_memory_on_device(device)
+
+
+def load_optimized_dit_model_with_lora(dit_path: str, fp8_scaled: bool, lora_weight: list[str], lora_multiplier: list[float], fp8: bool, blocks_to_swap: int, attn_mode: str, rope_scaling_timestep_threshold: int, rope_scaling_factor: float, optimized_model_dir: str, device: torch.device):
+    """load_optimized_dit_model_with_lora
+    
+    モデルのロード先は次のとおり。なお、実装では`block_to_swap`も考慮する。
+    1. 最適化済みのモデルが存在する場合、GPUにロードする
+    2. モデルがLoRAの適用やfp8量子化などを行わない場合、はじめからGPUにロードする
+    3. モデルがLoRAの適用を行う場合、いったんCPUにロードしてLoRAのmergeを行う。その後、fp8最適化時にGPUにロードする。
+
+    NOTE:
+    - fp8_scaled をディスクにキャッシュすることはいったん諦めた。難しい。
+    - LoRAのmerge時点でGPUに送っているようにも見えるのだが、ちょっとよく分からなかった...
+    """
+    filename = generate_optimized_model_filename(dit_path, lora_weight, lora_multiplier, fp8, fp8_scaled)
+    optimized_model_path = os.path.join(optimized_model_dir, filename)
+    
+    if os.path.exists(optimized_model_path):
+        # Do NOT care blocks_to_swap here.
+        logger.info(f"Loading optimized model from safetensors: {optimized_model_path}")
+        model = create_packed_model_empty(attn_mode)
+        state_dict = load_file(optimized_model_path)
+        model.load_state_dict(state_dict, assign=True, strict=False)
+        model.to(device)
+        return model
+    
+    model = load_dit_model(blocks_to_swap, fp8_scaled, lora_weight, dit_path, attn_mode, rope_scaling_timestep_threshold, rope_scaling_factor, device)
+
+    # merge LoRA weights
+    if lora_weight is not None and len(lora_weight) > 0:
+        # ugly hack to common merge_lora_weights function
+        merge_lora_weights(
+            lora_framepack,
+            model,
+            device,
+            args.lora_weight,
+            args.lora_multiplier,
+            args.include_patterns,
+            args.exclude_patterns,
+            args.lycoris,
+            args.save_merged_model,
+            None  # converter
+        )
+
+        # if we only want to save the model, we can skip the rest
+        if args.save_merged_model:
+            return None, None
+
+    # optimize model: fp8 conversion, block swap etc.
+    optimize_model(model, args, device)
+    os.makedirs(os.path.dirname(optimized_model_path), exist_ok=True)
+    mem_eff_save_file(model.state_dict(), optimized_model_path)
+    return model
 
 
 # endregion
@@ -938,38 +1011,6 @@ def convert_hunyuan_to_framepack(lora_sd: dict[str, torch.Tensor]) -> dict[str, 
     return new_lora_sd
 
 
-def load_optimized_dit_model_with_lora(dit_path: str, fp8_scaled: bool, lora_weight: list[str], blocks_to_swap: int, attn_mode: str, rope_scaling_timestep_threshold: int, rope_scaling_factor: float, optimized_model_dir: str, device: torch.device):
-    """load_optimized_dit_model_with_lora
-
-    1. dit_path, lora_weight, lora_multiplier, fp8_scaled の値に応じたモデルを取得。モデルはディスクに保存し、メモ化を図る。
-    """
-    model = load_dit_model(blocks_to_swap, fp8_scaled, lora_weight, dit_path, attn_mode, rope_scaling_timestep_threshold, rope_scaling_factor, device)
-
-    # merge LoRA weights
-    if args.lora_weight is not None and len(args.lora_weight) > 0:
-        # ugly hack to common merge_lora_weights function
-        merge_lora_weights(
-            lora_framepack,
-            model,
-            device,
-            args.lora_weight,
-            args.lora_multiplier,
-            args.include_patterns,
-            args.exclude_patterns,
-            args.lycoris,
-            args.save_merged_model,
-            None  # converter
-        )
-
-        # if we only want to save the model, we can skip the rest
-        if args.save_merged_model:
-            return None, None
-
-    # optimize model: fp8 conversion, block swap etc.
-    optimize_model(model, args, device)
-    return model
-
-
 def generate(
     args: argparse.Namespace, gen_settings: GenerationSettings, prof: Optional[torch.profiler.profile] = None, log_timing=None
 ) -> tuple[AutoencoderKLCausal3D, torch.Tensor]:
@@ -1001,6 +1042,8 @@ def generate(
         args.dit,
         args.fp8_scaled,
         args.lora_weight,
+        args.lora_multiplier,
+        args.fp8,
         args.blocks_to_swap,
         args.attn_mode,
         args.rope_scaling_timestep_threshold,
