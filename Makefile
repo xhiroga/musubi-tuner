@@ -16,4 +16,4 @@ fpack_generate_video:
 		--device cuda --attn_mode sdpa --fp8 --fp8_llm \
 		--vae_chunk_size 32 --vae_spatial_tile_sample_min_size 128 \
 		--save_path $(SAVE_PATH) --seed 1234  \
-		--profile --cache_dir ~/.cache/musubi_tuner --optimized_model_dir $(MODELS)/diffusion_models/optimized
+		--profile --cache_dir ~/.cache/musubi_tuner --optimized_model_dir $(MODELS)/diffusion_models/optimized --log_level DEBUG

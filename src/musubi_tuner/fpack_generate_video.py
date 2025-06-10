@@ -17,7 +17,7 @@ import torch.profiler
 from diskcache import Cache
 from PIL import Image
 from safetensors import safe_open
-from safetensors.torch import load_file
+from safetensors.torch import load_file, save_file
 from tqdm import tqdm
 
 from musubi_tuner.dataset import image_video_dataset
@@ -236,7 +236,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--profile_shapes", action="store_true", default=False, help="Record tensor shapes in profiling (default: False)")
     parser.add_argument("--profile_memory", action="store_true", default=True, help="Profile memory usage (default: True)")
     parser.add_argument("--profile_stack", action="store_true", default=True, help="Record stack traces (default: True)")
-    
+    parser.add_argument("--log_level", type=str, default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"], help="Log level (default: INFO)")
+
     args = parser.parse_args()
 
     return args
@@ -584,6 +585,31 @@ def decode_latent(
     return history_pixels[0]  # remove batch dimension
 
 
+def log_data_types(data: Any, name: str = "", prefix: str = "", max_depth: int = 3, current_depth: int = 0) -> None:
+    if current_depth > max_depth:
+        logger.debug(f"{prefix}{name}: <max_depth_reached>")
+        return
+    
+    if isinstance(data, dict):
+        if current_depth == 0:
+            logger.debug(f"=== Debug: {name} data types ===")
+        
+        for key, value in data.items():
+            new_name = f"{name}[{key}]" if name else str(key)
+            log_data_types(value, new_name, prefix, max_depth, current_depth + 1)
+    elif isinstance(data, (list, tuple)):
+        for i, item in enumerate(data):
+            new_name = f"{name}[{i}]" if name else str(i)
+            log_data_types(item, new_name, prefix, max_depth, current_depth + 1)
+    else:
+        type_info = f"{type(data)}"
+        if hasattr(data, 'dtype'):
+            type_info += f" with dtype {data.dtype}"
+        if hasattr(data, 'shape'):
+            type_info += f" shape {data.shape}"
+        logger.debug(f"{prefix}{name}: {type_info}")
+
+
 def parse_section_strings(input_string: str) -> dict[int, str]:
     "define parsing function"
     section_strings = {}
@@ -760,6 +786,10 @@ def prepare_i2v_inputs(
 
     encode_prompts_decorated = cache.memoize()(encode_prompts) if cache is not None else encode_prompts # NOTE: Initialized cache has count: 0 and it is Falsy!
     arg_c, arg_null = encode_prompts_decorated(args.text_encoder1, args.fp8_llm, args.text_encoder2, device, args.prompt, args.negative_prompt, args.custom_system_prompt, args.guidance_scale)
+
+    # Debug logging for arg_c and arg_null data types
+    log_data_types(arg_c, "arg_c")
+    log_data_types(arg_null, "arg_null")
 
     # region: load image encoder
     feature_extractor, image_encoder = load_image_encoders(args)
@@ -1696,6 +1726,9 @@ def get_generation_settings(args: argparse.Namespace) -> GenerationSettings:
 def main(prof, log_dir):
     # Parse arguments
     args = parse_args()
+    
+    log_level = getattr(logging, args.log_level.upper())
+    logging.basicConfig(level=log_level, force=True)  # force=True to override existing configuration
     
     timing_log_path = f"{log_dir}/timing.log"
     start_time = time.time()
