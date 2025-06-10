@@ -10,7 +10,7 @@ fpack_generate_video:
 		--text_encoder1 $(MODELS)/text_encoder/model-00001-of-00004.safetensors \
 		--text_encoder2 $(MODELS)/text_encoder_2/model.safetensors \
 		--image_encoder $(MODELS)/image_encoder/model.safetensors \
-		--image_path $(IMAGE) \
+		--image_path $(IMAGE_PATH) \
 		--prompt "rotating 360 degrees" \
 		--video_size 960 544 --fps 30 --infer_steps 10 --video_sections 1 --latent_window_size 5 \
 		--device cuda --attn_mode sdpa --fp8 --fp8_llm \
