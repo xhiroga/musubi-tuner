@@ -483,15 +483,7 @@ def load_optimized_dit_model_with_lora(dit_path: str, fp8_scaled: bool, lora_wei
     """
     filename = generate_optimized_model_filename(dit_path, lora_weight, lora_multiplier, fp8, fp8_scaled)
     optimized_model_path = os.path.join(optimized_model_dir, filename)
-    
-    if os.path.exists(optimized_model_path):
-        # Do NOT care blocks_to_swap here.
-        logger.info(f"Loading optimized model from safetensors: {optimized_model_path}")
-        model = create_packed_model_empty(attn_mode)
-        state_dict = load_file(optimized_model_path)
-        model.load_state_dict(state_dict, assign=True, strict=False)
-        model.to(device)
-        return model
+    print(f"{optimized_model_path=}")
     
     model = load_dit_model(blocks_to_swap, fp8_scaled, lora_weight, dit_path, attn_mode, rope_scaling_timestep_threshold, rope_scaling_factor, device)
 
@@ -517,8 +509,6 @@ def load_optimized_dit_model_with_lora(dit_path: str, fp8_scaled: bool, lora_wei
 
     # optimize model: fp8 conversion, block swap etc.
     optimize_model(model, args, device)
-    os.makedirs(os.path.dirname(optimized_model_path), exist_ok=True)
-    mem_eff_save_file(model.state_dict(), optimized_model_path)
     return model
 
 
