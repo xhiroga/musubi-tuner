@@ -405,36 +405,44 @@ def load_dit_model(blocks_to_swap: int, fp8_scaled: bool, lora_weight: list[str]
     return model
 
 
-def optimize_model(model: HunyuanVideoTransformer3DModelPacked, args: argparse.Namespace, device: torch.device) -> None:
+def optimize_model(
+    model: HunyuanVideoTransformer3DModelPacked, 
+    fp8_scaled: bool,
+    blocks_to_swap: int,
+    fp8: bool,
+    device: torch.device
+) -> None:
     """optimize the model (FP8 conversion, device move etc.)
 
     Args:
         model: dit model
-        args: command line arguments
+        fp8_scaled: whether to use fp8 scaled optimization
+        blocks_to_swap: number of blocks to swap
+        fp8: whether to use fp8
         device: device to use
     """
-    if args.fp8_scaled:
+    if fp8_scaled:
         # load state dict as-is and optimize to fp8
         state_dict = model.state_dict()
 
         # if no blocks to swap, we can move the weights to GPU after optimization on GPU (omit redundant CPU->GPU copy)
-        move_to_device = args.blocks_to_swap == 0  # if blocks_to_swap > 0, we will keep the model on CPU
+        move_to_device = blocks_to_swap == 0  # if blocks_to_swap > 0, we will keep the model on CPU
         state_dict = model.fp8_optimization(state_dict, device, move_to_device, use_scaled_mm=False)  # args.fp8_fast)
 
         info = model.load_state_dict(state_dict, strict=True, assign=True)
         logger.info(f"Loaded FP8 optimized weights: {info}")
 
-        if args.blocks_to_swap == 0:
+        if blocks_to_swap == 0:
             model.to(device)  # make sure all parameters are on the right device (e.g. RoPE etc.)
     else:
         # simple cast to dit_dtype
         target_dtype = None  # load as-is (dit_weight_dtype == dtype of the weights in state_dict)
         target_device = None
 
-        if args.fp8:
+        if fp8:
             target_dtype = torch.float8_e4m3fn
 
-        if args.blocks_to_swap == 0:
+        if blocks_to_swap == 0:
             logger.info(f"Move model to device: {device}")
             target_device = device
 
@@ -456,9 +464,9 @@ def optimize_model(model: HunyuanVideoTransformer3DModelPacked, args: argparse.N
     #             fullgraph=compile_fullgraph.lower() in "true",
     #         )
 
-    if args.blocks_to_swap > 0:
-        logger.info(f"Enable swap {args.blocks_to_swap} blocks to CPU from device: {device}")
-        model.enable_block_swap(args.blocks_to_swap, device, supports_backward=False)
+    if blocks_to_swap > 0:
+        logger.info(f"Enable swap {blocks_to_swap} blocks to CPU from device: {device}")
+        model.enable_block_swap(blocks_to_swap, device, supports_backward=False)
         model.move_to_device_except_swap_blocks(device)
         model.prepare_block_swap_before_forward()
     else:
@@ -469,7 +477,23 @@ def optimize_model(model: HunyuanVideoTransformer3DModelPacked, args: argparse.N
     clean_memory_on_device(device)
 
 
-def load_optimized_dit_model_with_lora(dit_path: str, fp8_scaled: bool, lora_weight: list[str], lora_multiplier: list[float], fp8: bool, blocks_to_swap: int, attn_mode: str, rope_scaling_timestep_threshold: int, rope_scaling_factor: float, optimized_model_dir: str, device: torch.device):
+def load_optimized_dit_model_with_lora(
+    dit_path: str, 
+    fp8_scaled: bool, 
+    lora_weight: list[str], 
+    lora_multiplier: list[float], 
+    fp8: bool, 
+    blocks_to_swap: int, 
+    attn_mode: str, 
+    rope_scaling_timestep_threshold: int, 
+    rope_scaling_factor: float, 
+    optimized_model_dir: str, 
+    device: torch.device,
+    include_patterns: Optional[List[str]],
+    exclude_patterns: Optional[List[str]],
+    lycoris: bool,
+    save_merged_model: Optional[str]
+):
     """load_optimized_dit_model_with_lora
     
     モデルのロード先は次のとおり。なお、実装では`block_to_swap`も考慮する。
@@ -494,21 +518,21 @@ def load_optimized_dit_model_with_lora(dit_path: str, fp8_scaled: bool, lora_wei
             lora_framepack,
             model,
             device,
-            args.lora_weight,
-            args.lora_multiplier,
-            args.include_patterns,
-            args.exclude_patterns,
-            args.lycoris,
-            args.save_merged_model,
+            lora_weight,
+            lora_multiplier,
+            include_patterns,
+            exclude_patterns,
+            lycoris,
+            save_merged_model,
             None  # converter
         )
 
         # if we only want to save the model, we can skip the rest
-        if args.save_merged_model:
-            return None, None
+        if save_merged_model:
+            return None
 
     # optimize model: fp8 conversion, block swap etc.
-    optimize_model(model, args, device)
+    optimize_model(model, fp8_scaled, blocks_to_swap, fp8, device)
     return model
 
 
@@ -727,7 +751,7 @@ def prepare_i2v_inputs(
     args: argparse.Namespace,
     device: torch.device,
     vae: AutoencoderKLCausal3D
-) -> tuple[int, int, int, Any | dict[Any, Any], Any | dict[Any, Any], dict[int, dict[str, Any]], torch.Tensor | None, list[torch.Tensor], list[Image.Image | None] | None]:
+) -> tuple:
     """Prepare inputs for I2V
 
     Args:
@@ -1033,7 +1057,7 @@ def convert_hunyuan_to_framepack(lora_sd: dict[str, torch.Tensor]) -> dict[str, 
 
 def generate(
     args: argparse.Namespace, gen_settings: GenerationSettings, prof: Optional[torch.profiler.profile] = None, log_timing=None
-) -> tuple[AutoencoderKLCausal3D, torch.Tensor]:
+) -> Optional[tuple[AutoencoderKLCausal3D, torch.Tensor]]:
     """main function for generation
 
     Args:
@@ -1069,8 +1093,16 @@ def generate(
         args.rope_scaling_timestep_threshold,
         args.rope_scaling_factor,
         args.optimized_model_dir,
-        device
+        device,
+        args.include_patterns,
+        args.exclude_patterns,
+        args.lycoris,
+        args.save_merged_model
     )
+
+    # if we only want to save the model, we can skip the rest
+    if args.save_merged_model:
+        return None
 
     # sampling
     latent_window_size = args.latent_window_size  # default is 9
@@ -1797,10 +1829,13 @@ def main(prof, log_dir):
         # Generate latent
         gen_settings = get_generation_settings(args)
         
-        vae, latent = generate(args, gen_settings, prof=prof, log_timing=log_timing)
+        result = generate(args, gen_settings, prof=prof, log_timing=log_timing)
         # print(f"Generated latent shape: {latent.shape}")
-        if args.save_merged_model:
+        if result is None:
+            # Model was saved, no further processing needed
             return
+        
+        vae, latent = result
 
         # Save latent and video
         save_output(args, vae, latent[0], device, None, log_timing)
