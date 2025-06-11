@@ -50,7 +50,15 @@ dev = [
   "matplotlib==3.10.0",
   "tensorboard",
   "prompt-toolkit==3.0.51",
+  "pytest>=8.4.0",
+  "pytest-dotenv>=0.5.2",
 ]
+
+[tool.pytest.ini_options]
+markers = [
+    "adhoc: marks tests as adhoc (not run in CI)",
+]
+env_files = [".env"]
 
 [build-system]
 requires = ["hatchling"]
