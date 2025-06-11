@@ -24,7 +24,7 @@ from tqdm import tqdm
 from musubi_tuner.networks import lora_wan
 from musubi_tuner.utils.safetensors_utils import mem_eff_save_file, load_safetensors
 from musubi_tuner.wan.configs import WAN_CONFIGS, SUPPORTED_SIZES
-import musubi_tuner.wan
+import musubi_tuner.wan as wan
 from musubi_tuner.wan.modules.model import WanModel, load_wan_model, detect_wan_sd_dtype
 from musubi_tuner.wan.modules.vae import WanVAE
 from musubi_tuner.wan.modules.t5 import T5EncoderModel

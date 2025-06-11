@@ -15,7 +15,7 @@ from musubi_tuner.dataset.image_video_dataset import ARCHITECTURE_WAN, ItemInfo,
 # for t5 config: all Wan2.1 models have the same config for t5
 from musubi_tuner.wan.configs import wan_t2v_14B
 
-import musubi_tuner.cache_text_encoder_outputs
+import musubi_tuner.cache_text_encoder_outputs as cache_text_encoder_outputs
 import logging
 
 from musubi_tuner.utils.model_utils import str_to_dtype
@@ -44,7 +44,12 @@ def encode_and_save_batch(
         save_text_encoder_output_cache_wan(item, ctx)
 
 
-def main(args):
+def main():
+    parser = cache_text_encoder_outputs.setup_parser_common()
+    parser = wan_setup_parser(parser)
+
+    args = parser.parse_args()
+
     device = args.device if args.device is not None else "cuda" if torch.cuda.is_available() else "cpu"
     device = torch.device(device)
 
@@ -100,8 +105,4 @@ def wan_setup_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentParser
 
 
 if __name__ == "__main__":
-    parser = cache_text_encoder_outputs.setup_parser_common()
-    parser = wan_setup_parser(parser)
-
-    args = parser.parse_args()
-    main(args)
+    main()
