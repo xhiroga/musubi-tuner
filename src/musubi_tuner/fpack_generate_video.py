@@ -507,6 +507,7 @@ def load_optimized_model(
     - fp8_scaled をディスクにキャッシュすることはいったん諦めた。難しい。
     - LoRAのmerge時点でGPUに送っているようにも見えるのだが、ちょっとよく分からなかった...
     """
+    optimized_model_path = None
     if optimized_model_dir is not None:
         filename = generate_optimized_model_filename(dit_path, lora_weight, lora_multiplier, fp8, fp8_scaled)
         optimized_model_path = os.path.join(optimized_model_dir, filename)
