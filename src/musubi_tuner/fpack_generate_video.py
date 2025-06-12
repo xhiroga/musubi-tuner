@@ -479,7 +479,7 @@ def optimize_model(
     clean_memory_on_device(device)
 
 
-def load_optimized_dit_model_with_lora(
+def load_optimized_model(
     dit_path: str, 
     fp8_scaled: bool, 
     lora_weight: list[str], 
@@ -1125,7 +1125,6 @@ def generate(
     )
 
     # video generation ######
-    f1_mode = args.f1
     one_frame_inference = None
     if args.one_frame_inference is not None:
         one_frame_inference = set()
@@ -1161,7 +1160,7 @@ def generate(
             seed_g=seed_g,
             latent_window_size=latent_window_size,
             total_latent_sections=total_latent_sections,
-            f1_mode=f1_mode,
+            f1_mode=args.f1,
             one_frame_inference=one_frame_inference,
             num_frames=num_frames,
             sample_solver=args.sample_solver,
