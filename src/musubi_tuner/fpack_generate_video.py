@@ -389,6 +389,7 @@ def load_dit_model(blocks_to_swap: int, fp8_scaled: bool, lora_weight: list[str]
     Returns:
         HunyuanVideoTransformer3DModelPacked: DiT model
     """
+    logger.debug(f"{blocks_to_swap=}, {fp8_scaled=}, {lora_weight=}, {dit_path=}, {attn_mode=}, {rope_scaling_timestep_threshold=}, {rope_scaling_factor=}, {device=}")
     loading_device = "cpu"
     if blocks_to_swap == 0 and not fp8_scaled and lora_weight is None:
         loading_device = device
@@ -421,6 +422,7 @@ def optimize_model(
         fp8: whether to use fp8
         device: device to use
     """
+    logger.debug(f"{fp8_scaled=}, {blocks_to_swap=}, {fp8=}, {device=}")
     if fp8_scaled:
         # load state dict as-is and optimize to fp8
         state_dict = model.state_dict()

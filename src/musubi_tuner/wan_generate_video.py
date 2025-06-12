@@ -519,6 +519,7 @@ def merge_lora_weights(
         save_merged_model: Path to save the merged model
         converter: Optional callable to convert weights
     """
+    logger.debug(f"{lora_weight=}, {lora_multiplier=}, {include_patterns=}, {exclude_patterns=}, {lycoris=}, {save_merged_model=}, {converter=}")
     if lora_weight is None or len(lora_weight) == 0:
         return
 
