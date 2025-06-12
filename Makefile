@@ -54,18 +54,18 @@ modal_full_workflow: modal_upload_models_volume modal_test fpack_generate_video_
 
 fpack_generate_video:
 	uv run --extra cu128 src/musubi_tuner/fpack_generate_video.py \
-		--dit $(MODELS)/diffusion_models/FramePackI2V_HY \
-		--vae $(MODELS)/vae/diffusion_pytorch_model.safetensors \
-		--text_encoder1 $(MODELS)/text_encoder/model-00001-of-00004.safetensors \
-		--text_encoder2 $(MODELS)/text_encoder_2/model.safetensors \
-		--image_encoder $(MODELS)/image_encoder/model.safetensors \
+		--dit $(DIT_PATH) \
+		--vae $(VAE_PATH) \
+		--text_encoder1 $(TEXT_ENCODER1_PATH) \
+		--text_encoder2 $(TEXT_ENCODER2_PATH) \
+		--image_encoder $(IMAGE_ENCODER_PATH) \
 		--image_path $(IMAGE_PATH) \
-		--prompt "rotating 360 degrees" \
+		--prompt $(PROMPT) \
 		--video_size 960 544 --fps 30 --infer_steps 10 --video_sections 1 --latent_window_size 5 \
 		--device cuda --attn_mode sdpa --fp8_scaled \
 		--vae_chunk_size 32 --vae_spatial_tile_sample_min_size 128 \
 		--save_path $(SAVE_PATH) --seed 1234  \
-		--profile --cache_dir ~/.cache/musubi_tuner --optimized_model_dir $(MODELS)/diffusion_models/optimized --log_level DEBUG
+		--profile --cache_dir $(CACHE_DIR) --optimized_model_dir $(OPTIMIZED_MODEL_DIR) --log_level DEBUG
 
 # FramePack I2V生成 (プロファイリング版)
 fpack_generate_video_on_modal_profile:

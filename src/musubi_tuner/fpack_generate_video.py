@@ -493,7 +493,7 @@ def load_optimized_dit_model_with_lora(
     exclude_patterns: Optional[List[str]],
     lycoris: bool,
     save_merged_model: Optional[str]
-):
+) -> Optional[HunyuanVideoTransformer3DModelPacked]:
     """load_optimized_dit_model_with_lora
     
     モデルのロード先は次のとおり。なお、実装では`block_to_swap`も考慮する。
