@@ -512,10 +512,11 @@ def load_optimized_model(
         optimized_model_path = os.path.join(optimized_model_dir, filename)
     
     if optimized_model_path is not None and os.path.exists(optimized_model_path):
-        logger.info(f"{optimized_model_path=}")
+        logger.info(f"Load optimized model from disk: {optimized_model_path}")
         model = create_packed_model_empty(attn_mode)
         state_dict = load_file(optimized_model_path, device="cpu")
-        apply_fp8_monkey_patch(model, state_dict, use_scaled_mm=False)
+        if fp8_scaled:
+            apply_fp8_monkey_patch(model, state_dict, use_scaled_mm=False)
         model.load_state_dict(state_dict, strict=True, assign=True)
         model.to(device)
         return model
