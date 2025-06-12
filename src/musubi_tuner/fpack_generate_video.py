@@ -487,7 +487,7 @@ def load_optimized_model(
     attn_mode: str, 
     rope_scaling_timestep_threshold: int, 
     rope_scaling_factor: float, 
-    optimized_model_dir: str, 
+    optimized_model_dir: str | None, 
     device: torch.device,
     include_patterns: Optional[list[str]],
     exclude_patterns: Optional[list[str]],
@@ -505,9 +505,10 @@ def load_optimized_model(
     - fp8_scaled をディスクにキャッシュすることはいったん諦めた。難しい。
     - LoRAのmerge時点でGPUに送っているようにも見えるのだが、ちょっとよく分からなかった...
     """
-    filename = generate_optimized_model_filename(dit_path, lora_weight, lora_multiplier, fp8, fp8_scaled)
-    optimized_model_path = os.path.join(optimized_model_dir, filename)
-    print(f"{optimized_model_path=}")
+    if optimized_model_dir is not None:
+        filename = generate_optimized_model_filename(dit_path, lora_weight, lora_multiplier, fp8, fp8_scaled)
+        optimized_model_path = os.path.join(optimized_model_dir, filename)
+        logger.debug(f"Optimized model path: {optimized_model_path=}")
     
     model = load_dit_model(blocks_to_swap, fp8_scaled, lora_weight, dit_path, attn_mode, rope_scaling_timestep_threshold, rope_scaling_factor, device)
 

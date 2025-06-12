@@ -24,7 +24,7 @@ def test_load_optimized_model():
         attn_mode="sdpa",
         rope_scaling_timestep_threshold=0,
         rope_scaling_factor=0,
-        optimized_model_dir="/tmp",
+        optimized_model_dir=None,
         device=torch.device("cuda"),
         include_patterns=[],
         exclude_patterns=[],
@@ -37,9 +37,12 @@ def test_load_optimized_model():
     for name, module in model.named_modules():
         # 最適化のロジックは [hunyuan_video_packed.py#L1958-L1959](src/musubi_tuner/frame_pack/hunyuan_video_packed.py#L1958-L1959)
         # DiTのうち、正規化層を除いた重みがfp8最適化される
-        if (name.startswith("transformer_blocks") or name.startswith("single_transformer_blocks")) and "norm" not in name:
-            assert module.scale_weight.dtype == torch.float8_e4m3fn, f"{name=}, {module.scale_weight.dtype=}"
-            assert module.weight.dtype == torch.bfloat16, f"{name=}, {module.weight.dtype=}"
+        if (name.startswith("transformer_blocks.") or name.startswith("single_transformer_blocks.")) and "norm" not in name:
+            # コンテナモジュールを除く
+            if hasattr(module, "weight"):
+                assert hasattr(module, "scale_weight"), f"{name=}, {module=}"
+                assert module.scale_weight.dtype == torch.float8_e4m3fn, f"{name=}, {module.scale_weight.dtype=}"
+                assert module.weight.dtype == torch.bfloat16, f"{name=}, {module.weight.dtype=}"
         # そのほかの場合（入力埋め込み, Contenxt処理、出力のProjection等）はfp8最適化しない
         else:
             pass
