@@ -1085,22 +1085,24 @@ def generate(
     )
 
     model = load_optimized_dit_model_with_lora(
-        args.dit,
-        args.fp8_scaled,
-        args.lora_weight,
-        args.lora_multiplier,
-        args.fp8,
-        args.blocks_to_swap,
-        args.attn_mode,
-        args.rope_scaling_timestep_threshold,
-        args.rope_scaling_factor,
-        args.optimized_model_dir,
-        device,
-        args.include_patterns,
-        args.exclude_patterns,
-        args.lycoris,
-        args.save_merged_model
+        dit_path=args.dit,
+        fp8_scaled=args.fp8_scaled,
+        lora_weight=args.lora_weight,
+        lora_multiplier=args.lora_multiplier,
+        fp8=args.fp8,
+        blocks_to_swap=args.blocks_to_swap,
+        attn_mode=args.attn_mode,
+        rope_scaling_timestep_threshold=args.rope_scaling_timestep_threshold,
+        rope_scaling_factor=args.rope_scaling_factor,
+        optimized_model_dir=args.optimized_model_dir,
+        device=device,
+        include_patterns=args.include_patterns,
+        exclude_patterns=args.exclude_patterns,
+        lycoris=args.lycoris,
+        save_merged_model=args.save_merged_model,
     )
+    if model is None:
+        raise ValueError("Model is not loaded")
 
     # if we only want to save the model, we can skip the rest
     if args.save_merged_model:
