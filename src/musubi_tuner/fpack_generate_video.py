@@ -489,8 +489,8 @@ def load_optimized_dit_model_with_lora(
     rope_scaling_factor: float, 
     optimized_model_dir: str, 
     device: torch.device,
-    include_patterns: Optional[List[str]],
-    exclude_patterns: Optional[List[str]],
+    include_patterns: Optional[list[str]],
+    exclude_patterns: Optional[list[str]],
     lycoris: bool,
     save_merged_model: Optional[str]
 ) -> Optional[HunyuanVideoTransformer3DModelPacked]:

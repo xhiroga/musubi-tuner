@@ -1,7 +1,7 @@
 include .env
 export
 
-.PHONY: fpack_generate_video_on_modal fpack_generate_video modal_setup modal_upload_models modal_upload_models_volume modal_test modal_list_models modal_download_hf
+.PHONY: fpack_generate_video_on_modal fpack_generate_video modal_setup modal_upload_models modal_upload_models_volume modal_test modal_list_models modal_download_hf test
 
 # Modal関連のタスク
 modal_setup: modal_test modal_list_models
@@ -65,6 +65,7 @@ fpack_generate_video:
 		--device cuda --attn_mode sdpa --fp8_scaled \
 		--vae_chunk_size 32 --vae_spatial_tile_sample_min_size 128 \
 		--save_path $(SAVE_PATH) --seed 1234  \
+		--lora_weight $(LORA_PATH) --lora_multiplier $(LORA_MULTIPLIER) \
 		--profile --cache_dir $(CACHE_DIR) --optimized_model_dir $(OPTIMIZED_MODEL_DIR) --log_level DEBUG
 
 # FramePack I2V生成 (プロファイリング版)
@@ -104,3 +105,6 @@ modal_list_profiling_sessions:
 modal_clear_profiling_data:
 	@echo "🗑️  Clearing profiling data (requires confirmation)..."
 	modal run src/musubi_tuner/fpack_generate_video_on_modal.py::clear_profiling_data --confirm
+
+test:
+	uv run pytest test/musubi_tuner/test_fpack_generate_video.py -m adhoc -v
