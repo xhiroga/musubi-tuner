@@ -31,6 +31,7 @@ from musubi_tuner.frame_pack.framepack_utils import (
 )
 from musubi_tuner.frame_pack.hunyuan_video_packed import (
     HunyuanVideoTransformer3DModelPacked,
+    create_packed_model_empty,
     load_packed_model,
 )
 from musubi_tuner.frame_pack.k_diffusion_hunyuan import sample_hunyuan
@@ -41,6 +42,7 @@ from musubi_tuner.hv_generate_video import (
     save_videos_grid,
     synchronize_device,
 )
+from musubi_tuner.modules.fp8_optimization_utils import apply_fp8_monkey_patch
 from musubi_tuner.networks import lora_framepack
 from musubi_tuner.utils.device_utils import clean_memory_on_device
 
@@ -508,8 +510,16 @@ def load_optimized_model(
     if optimized_model_dir is not None:
         filename = generate_optimized_model_filename(dit_path, lora_weight, lora_multiplier, fp8, fp8_scaled)
         optimized_model_path = os.path.join(optimized_model_dir, filename)
-        logger.debug(f"Optimized model path: {optimized_model_path=}")
     
+    if optimized_model_path is not None and os.path.exists(optimized_model_path):
+        logger.info(f"{optimized_model_path=}")
+        model = create_packed_model_empty(attn_mode)
+        state_dict = load_file(optimized_model_path, device="cpu")
+        apply_fp8_monkey_patch(model, state_dict, use_scaled_mm=False)
+        model.load_state_dict(state_dict, strict=True, assign=True)
+        model.to(device)
+        return model
+
     model = load_dit_model(blocks_to_swap, fp8_scaled, lora_weight, dit_path, attn_mode, rope_scaling_timestep_threshold, rope_scaling_factor, device)
 
     # merge LoRA weights
@@ -534,6 +544,10 @@ def load_optimized_model(
 
     # optimize model: fp8 conversion, block swap etc.
     optimize_model(model, fp8_scaled, blocks_to_swap, fp8, device)
+
+    if optimized_model_path is not None:
+        logger.info(f"Saving optimized model to disk: {optimized_model_path}")
+        save_file(model.state_dict(), optimized_model_path)
     return model
 
 
@@ -797,7 +811,7 @@ def prepare_i2v_inputs(
     cache = None
     if args.cache_dir is not None:
         cache = Cache(args.cache_dir)
-        logger.info(f"{cache.count=}")
+        logger.info(f"{len(cache)=}")
 
     encode_prompts_decorated = cache.memoize()(encode_prompts) if cache is not None else encode_prompts # NOTE: Initialized cache has count: 0 and it is Falsy!
     arg_c, arg_null = encode_prompts_decorated(args.text_encoder1, args.fp8_llm, args.text_encoder2, device, args.prompt, args.negative_prompt, args.custom_system_prompt, args.guidance_scale)
