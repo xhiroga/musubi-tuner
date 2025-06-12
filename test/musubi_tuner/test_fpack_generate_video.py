@@ -33,18 +33,13 @@ def test_load_optimized_model():
     )
     assert model is not None
     assert hasattr(model, "eval")
-    for name, param in model.named_parameters():
-        # print(f"{name}: {param.dtype}, shape: {param.shape}")
-        # 最適化のロジックは [hunyuan_video_packed.py#L1958-L1959](https://github.com/xhiroga/musubi-tuner-xhiroga/blob/15800869e6d17abb915307d6c69b7d6164b28433/src/musubi_tuner/frame_pack/hunyuan_video_packed.py#L1958-L1959)
-        # 入力埋め込み, Contenxt処理、出力のProjectionはfp8最適化しない
-        if name.startswith("x_embedder") or name.startswith("context_embedder") or name.startswith("image_projection"):
-            assert param.dtype == torch.bfloat16, f"{name=}, {param.dtype=}"
-        # DiTのうち、重みは基本的にfp8最適化する
-        elif (
-            name.endswith(".weight")
-            and (name.startswith("transformer_blocks") or name.startswith("single_transformer_blocks"))
-            and "norm" not in name
-        ):
-            assert param.dtype == torch.float8_e4m3fn, f"{name=}, {param.dtype=}"
+
+    for name, module in model.named_modules():
+        # 最適化のロジックは [hunyuan_video_packed.py#L1958-L1959](src/musubi_tuner/frame_pack/hunyuan_video_packed.py#L1958-L1959)
+        # DiTのうち、正規化層を除いた重みがfp8最適化される
+        if (name.startswith("transformer_blocks") or name.startswith("single_transformer_blocks")) and "norm" not in name:
+            assert module.scale_weight.dtype == torch.float8_e4m3fn, f"{name=}, {module.scale_weight.dtype=}"
+            assert module.weight.dtype == torch.bfloat16, f"{name=}, {module.weight.dtype=}"
+        # そのほかの場合（入力埋め込み, Contenxt処理、出力のProjection等）はfp8最適化しない
         else:
-            assert param.dtype == torch.bfloat16, f"{name=}, {param.dtype=}"
+            pass

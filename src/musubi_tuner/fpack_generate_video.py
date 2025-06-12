@@ -31,7 +31,6 @@ from musubi_tuner.frame_pack.framepack_utils import (
 )
 from musubi_tuner.frame_pack.hunyuan_video_packed import (
     HunyuanVideoTransformer3DModelPacked,
-    create_packed_model_empty,
     load_packed_model,
 )
 from musubi_tuner.frame_pack.k_diffusion_hunyuan import sample_hunyuan
@@ -42,10 +41,9 @@ from musubi_tuner.hv_generate_video import (
     save_videos_grid,
     synchronize_device,
 )
-from musubi_tuner.modules.fp8_optimization_utils import apply_fp8_monkey_patch
 from musubi_tuner.networks import lora_framepack
 from musubi_tuner.utils.device_utils import clean_memory_on_device
-from musubi_tuner.utils.safetensors_utils import mem_eff_save_file
+
 from musubi_tuner.wan_generate_video import merge_lora_weights
 
 logger = logging.getLogger(__name__)
@@ -1084,7 +1082,7 @@ def generate(
         prepare_i2v_inputs(args, device, vae)
     )
 
-    model = load_optimized_dit_model_with_lora(
+    model = load_optimized_model(
         dit_path=args.dit,
         fp8_scaled=args.fp8_scaled,
         lora_weight=args.lora_weight,
