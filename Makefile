@@ -107,4 +107,4 @@ modal_clear_profiling_data:
 	modal run src/musubi_tuner/fpack_generate_video_on_modal.py::clear_profiling_data --confirm
 
 test:
-	uv run pytest test/musubi_tuner/test_fpack_generate_video.py -m adhoc -v
+	uv run pytest test/musubi_tuner/test_fpack_generate_video.py -m adhoc -v -s --capture=no
