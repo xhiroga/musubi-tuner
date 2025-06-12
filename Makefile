@@ -66,7 +66,9 @@ fpack_generate_video:
 		--vae_chunk_size 32 --vae_spatial_tile_sample_min_size 128 \
 		--save_path $(SAVE_PATH) --seed 1234  \
 		--lora_weight $(LORA_PATH) --lora_multiplier $(LORA_MULTIPLIER) \
-		--profile --cache_dir $(CACHE_DIR) --optimized_model_dir $(OPTIMIZED_MODEL_DIR) --log_level DEBUG
+		--profile --cache_dir $(CACHE_DIR) \
+		--optimized_model_dir $(OPTIMIZED_MODEL_DIR) \
+		--log_level DEBUG
 
 # FramePack I2V生成 (プロファイリング版)
 fpack_generate_video_on_modal_profile:

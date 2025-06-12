@@ -86,7 +86,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Save merged model to path. If specified, no inference will be performed.",
     )
-    parser.add_argument("--optimized_model_dir", type=str, required=True, help="Optimized model directory")
+    parser.add_argument("--optimized_model_dir", type=str, default=None, help="Optimized model directory")
 
     # inference
     parser.add_argument(
