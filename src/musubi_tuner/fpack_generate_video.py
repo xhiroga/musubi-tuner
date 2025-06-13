@@ -494,7 +494,8 @@ def load_optimized_model(
     include_patterns: Optional[list[str]],
     exclude_patterns: Optional[list[str]],
     lycoris: bool,
-    save_merged_model: Optional[str]
+    save_merged_model: Optional[str],
+    log_timing: Optional[Callable] = None
 ) -> Optional[HunyuanVideoTransformer3DModelPacked]:
     """load_optimized_dit_model_with_lora
     
@@ -507,18 +508,26 @@ def load_optimized_model(
     - fp8_scaled をディスクにキャッシュすることはいったん諦めた。難しい。
     - LoRAのmerge時点でGPUに送っているようにも見えるのだが、ちょっとよく分からなかった...
     """
+    if log_timing is None:
+        log_timing = print
+
     optimized_model_path = None
     if optimized_model_dir is not None:
         filename = generate_optimized_model_filename(dit_path, lora_weight, lora_multiplier, fp8, fp8_scaled)
         optimized_model_path = os.path.join(optimized_model_dir, filename)
     
     if optimized_model_path is not None and os.path.exists(optimized_model_path):
+        log_timing(f"load_optimized_model: {optimized_model_path}")
         logger.info(f"Load optimized model from disk: {optimized_model_path}")
         model = create_packed_model_empty(attn_mode)
-        state_dict = load_file(optimized_model_path, device="cpu")
+        log_timing(f"load_file: {optimized_model_path}")
+        state_dict = load_file(optimized_model_path, device=str(device))
+        log_timing(f"apply_fp8_monkey_patch: {optimized_model_path}")
         if fp8_scaled:
             apply_fp8_monkey_patch(model, state_dict, use_scaled_mm=False)
-        model.load_state_dict(state_dict, strict=True, assign=True)
+        log_timing(f"load_state_dict: {optimized_model_path}")
+        model.load_state_dict(state_dict, strict=True, assign=True)        
+        log_timing(f"to: {optimized_model_path}")
         model.to(device)
         return model
 
@@ -1115,12 +1124,10 @@ def generate(
         exclude_patterns=args.exclude_patterns,
         lycoris=args.lycoris,
         save_merged_model=args.save_merged_model,
+        log_timing=log_timing,
     )
-    if model is None:
-        raise ValueError("Model is not loaded")
-
     # if we only want to save the model, we can skip the rest
-    if args.save_merged_model:
+    if model is None:
         return None
 
     # sampling
