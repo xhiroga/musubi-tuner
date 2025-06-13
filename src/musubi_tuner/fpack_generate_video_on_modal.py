@@ -212,7 +212,6 @@ def profile_video_generation(
     
     # その他の設定
     args.cache_dir = "/tmp/.cache/musubi_tuner"
-    args.optimized_model_dir = "/models/models/diffusion_models/optimized"
     args.log_level = "DEBUG"
     
     # プロファイリング設定
@@ -648,7 +647,6 @@ def generate_video_modal(
     
     # その他の設定
     args.cache_dir = "/tmp/.cache/musubi_tuner"
-    args.optimized_model_dir = "/models/models/diffusion_models/optimized"
     args.log_level = "DEBUG"
     args.profile = True
     

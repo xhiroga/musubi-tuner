@@ -86,7 +86,6 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Save merged model to path. If specified, no inference will be performed.",
     )
-    parser.add_argument("--optimized_model_dir", type=str, default=None, help="Optimized model directory")
 
     # inference
     parser.add_argument(
@@ -220,14 +219,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no_metadata", action="store_true", help="do not save metadata")
     parser.add_argument("--latent_path", type=str, nargs="*", default=None, help="path to latent for decode. no inference")
     parser.add_argument("--lycoris", action="store_true", help="use lycoris for inference")
-    # parser.add_argument("--compile", action="store_true", help="Enable torch.compile")
-    # parser.add_argument(
-    #     "--compile_args",
-    #     nargs=4,
-    #     metavar=("BACKEND", "MODE", "DYNAMIC", "FULLGRAPH"),
-    #     default=["inductor", "max-autotune-no-cudagraphs", "False", "False"],
-    #     help="Torch.compile settings",
-    # )
+    parser.add_argument("--compile", action="store_true", help="Enable torch.compile")
+    parser.add_argument(
+        "--compile_args",
+        nargs=4,
+        metavar=("BACKEND", "MODE", "DYNAMIC", "FULLGRAPH"),
+        default=["inductor", "max-autotune-no-cudagraphs", "False", "False"],
+        help="Torch.compile settings",
+    )
 
     parser.add_argument("--cache_dir", type=str, default=None, help="Cache directory for models and data. Default is None (no cache).")
     
@@ -489,7 +488,7 @@ def load_optimized_model(
     attn_mode: str, 
     rope_scaling_timestep_threshold: int, 
     rope_scaling_factor: float, 
-    optimized_model_dir: str | None, 
+    cache_dir: str | None,
     device: torch.device,
     include_patterns: Optional[list[str]],
     exclude_patterns: Optional[list[str]],
@@ -511,24 +510,26 @@ def load_optimized_model(
     if log_timing is None:
         log_timing = print
 
-    optimized_model_path = None
-    if optimized_model_dir is not None:
+    cache_model_dir = os.path.join(cache_dir, "models") if cache_dir is not None else None
+
+    cache_model_path = None
+    if cache_model_dir is not None:
         filename = generate_optimized_model_filename(dit_path, lora_weight, lora_multiplier, fp8, fp8_scaled)
-        optimized_model_path = os.path.join(optimized_model_dir, filename)
+        cache_model_path = os.path.join(cache_model_dir, filename)
     
-    if optimized_model_path is not None and os.path.exists(optimized_model_path):
-        log_timing(f"load_optimized_model: {optimized_model_path}")
-        logger.info(f"Load optimized model from disk: {optimized_model_path}")
+    if cache_model_path is not None and os.path.exists(cache_model_path):
+        log_timing(f"load_optimized_model: {cache_model_path}")
+        logger.info(f"Load optimized model from disk: {cache_model_path}")
         model = create_packed_model_empty(attn_mode)
         # ここで先に model.to_empty(device=device) すると、推論が動かなくなる。
-        log_timing(f"load_file: {optimized_model_path}")
-        state_dict = load_file(optimized_model_path, device=str(device))
-        log_timing(f"apply_fp8_monkey_patch: {optimized_model_path}")
+        log_timing(f"load_file: {cache_model_path}")
+        state_dict = load_file(cache_model_path, device=str(device))
+        log_timing(f"apply_fp8_monkey_patch: {cache_model_path}")
         if fp8_scaled:
             apply_fp8_monkey_patch(model, state_dict, use_scaled_mm=False)
-        log_timing(f"load_state_dict: {optimized_model_path}")
+        log_timing(f"load_state_dict: {cache_model_path}")
         model.load_state_dict(state_dict, strict=True, assign=True)        
-        log_timing(f"to: {optimized_model_path}")
+        log_timing(f"to: {cache_model_path}")
         model.to(device)
         return model
 
@@ -557,10 +558,10 @@ def load_optimized_model(
     # optimize model: fp8 conversion, block swap etc.
     optimize_model(model, fp8_scaled, blocks_to_swap, fp8, device)
 
-    if optimized_model_path is not None:
-        logger.info(f"Saving optimized model to disk: {optimized_model_path}")
-        os.makedirs(os.path.dirname(optimized_model_path), exist_ok=True)
-        save_file(model.state_dict(), optimized_model_path)
+    if cache_model_path is not None:
+        logger.info(f"Saving optimized model to disk: {cache_model_path}")
+        os.makedirs(os.path.dirname(cache_model_path), exist_ok=True)
+        save_file(model.state_dict(), cache_model_path)
     return model
 
 
@@ -821,12 +822,12 @@ def prepare_i2v_inputs(
         control_image_tensors = None
         control_mask_images = None
 
-    cache = None
+    encoded_prompts = None
     if args.cache_dir is not None:
-        cache = Cache(args.cache_dir)
-        logger.info(f"{len(cache)=}")
+        encoded_prompts = Cache(os.path.join(args.cache_dir, "encoded_prompts"))
+        logger.info(f"{len(encoded_prompts)=}")
 
-    encode_prompts_decorated = cache.memoize()(encode_prompts) if cache is not None else encode_prompts # NOTE: Initialized cache has count: 0 and it is Falsy!
+    encode_prompts_decorated = encoded_prompts.memoize()(encode_prompts) if encoded_prompts is not None else encode_prompts # NOTE: Initialized cache has count: 0 and it is Falsy!
     arg_c, arg_null = encode_prompts_decorated(args.text_encoder1, args.fp8_llm, args.text_encoder2, device, args.prompt, args.negative_prompt, args.custom_system_prompt, args.guidance_scale)
 
     # Debug logging for arg_c and arg_null data types
@@ -1120,7 +1121,7 @@ def generate(
         attn_mode=args.attn_mode,
         rope_scaling_timestep_threshold=args.rope_scaling_timestep_threshold,
         rope_scaling_factor=args.rope_scaling_factor,
-        optimized_model_dir=args.optimized_model_dir,
+        cache_dir=args.cache_dir,
         device=device,
         include_patterns=args.include_patterns,
         exclude_patterns=args.exclude_patterns,

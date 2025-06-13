@@ -43,7 +43,7 @@ def test_load_optimized_model():
         attn_mode="sdpa",
         rope_scaling_timestep_threshold=0,
         rope_scaling_factor=0,
-        optimized_model_dir=None,
+        cache_dir=None,
         device=torch.device("cuda"),
         include_patterns=[],
         exclude_patterns=[],
@@ -60,14 +60,14 @@ def test_load_optimized_model_from_disk():
     dit_path = os.environ.get("DIT_PATH")
     lora_path = os.environ.get("LORA_PATH")
     lora_multiplier_str = os.environ.get("LORA_MULTIPLIER")
-    optimized_model_dir = os.environ.get("OPTIMIZED_MODEL_DIR")
-    if not all([dit_path, lora_path, lora_multiplier_str, optimized_model_dir]):
-        pytest.skip("DIT_PATH, LORA_PATH, LORA_MULTIPLIER, OPTIMIZED_MODEL_DIR is not set")
+    cache_dir = os.environ.get("CACHE_DIR")
+    if not all([dit_path, lora_path, lora_multiplier_str, cache_dir]):
+        pytest.skip("DIT_PATH, LORA_PATH, LORA_MULTIPLIER, CACHE_DIR is not set")
 
     assert dit_path is not None
     assert lora_path is not None
     assert lora_multiplier_str is not None
-    assert optimized_model_dir is not None
+    assert cache_dir is not None
     lora_multiplier = float(lora_multiplier_str)
 
     model = load_optimized_model(
@@ -80,7 +80,7 @@ def test_load_optimized_model_from_disk():
         attn_mode="sdpa",
         rope_scaling_timestep_threshold=0,
         rope_scaling_factor=0,
-        optimized_model_dir=optimized_model_dir,
+        cache_dir=cache_dir,
         device=torch.device("cuda"),
         include_patterns=[],
         exclude_patterns=[],
