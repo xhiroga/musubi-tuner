@@ -520,6 +520,7 @@ def load_optimized_model(
         log_timing(f"load_optimized_model: {optimized_model_path}")
         logger.info(f"Load optimized model from disk: {optimized_model_path}")
         model = create_packed_model_empty(attn_mode)
+        # ここで先に model.to_empty(device=device) すると、推論が動かなくなる。
         log_timing(f"load_file: {optimized_model_path}")
         state_dict = load_file(optimized_model_path, device=str(device))
         log_timing(f"apply_fp8_monkey_patch: {optimized_model_path}")
@@ -558,6 +559,7 @@ def load_optimized_model(
 
     if optimized_model_path is not None:
         logger.info(f"Saving optimized model to disk: {optimized_model_path}")
+        os.makedirs(os.path.dirname(optimized_model_path), exist_ok=True)
         save_file(model.state_dict(), optimized_model_path)
     return model
 
