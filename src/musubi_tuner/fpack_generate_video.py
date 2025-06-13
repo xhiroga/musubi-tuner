@@ -502,10 +502,6 @@ def load_optimized_model(
     1. 最適化済みのモデルが存在する場合、GPUにロードする
     2. モデルがLoRAの適用やfp8量子化などを行わない場合、はじめからGPUにロードする
     3. モデルがLoRAの適用を行う場合、いったんCPUにロードしてLoRAのmergeを行う。その後、fp8最適化時にGPUにロードする。
-
-    NOTE:
-    - fp8_scaled をディスクにキャッシュすることはいったん諦めた。難しい。
-    - LoRAのmerge時点でGPUに送っているようにも見えるのだが、ちょっとよく分からなかった...
     """
     if log_timing is None:
         log_timing = print
