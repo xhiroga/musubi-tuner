@@ -555,7 +555,11 @@ def tensorrt_model(
     if compile_backend == "dynamo":
         torch._dynamo.config.cache_size_limit = 32
 
-    hidden_states = # TODO: HunyuanVideoTransformer3DModelPacked#forwardの初期値
+    # See musubi_tuner.frame_pack.k_diffusion_hunyuan.sample_hunyuan
+    initial_hidden_states = # TODO: HunyuanVideoTransformer3DModelPacked#forwardの初期値
+    initial_encoder_hidden_states = # TODO: HunyuanVideoTransformer3DModelPacked#forwardの初期値
+
+    # See musubi_tuner.frame_pack.hunyuan_video_packed.HunyuanVideoTransformer3DModelPacked#forward
     hidden_states, rope_freqs = model.process_input_hidden_states(
         hidden_states,
         latent_indices,
@@ -566,9 +570,9 @@ def tensorrt_model(
         clean_latents_4x,
         clean_latent_4x_indices,
     )
-    encoder_hidden_states = # TODO: HunyuanVideoTransformer3DModelPacked#forwardの初期値
     encoder_hidden_states = # TODO: context_embedder および extra_encoder_hidden_states での更新処理後の値
     temb = # TODO
+
     attention_mask = None, None, None, None
     inputs = [hidden_states, encoder_hidden_states, temb, attention_mask, rope_freqs]
 
