@@ -473,14 +473,13 @@ def load_optimized_model(
     attn_mode: str, 
     rope_scaling_timestep_threshold: int, 
     rope_scaling_factor: float, 
-    cache_dir: str | None,
     device: torch.device,
     include_patterns: Optional[list[str]],
     exclude_patterns: Optional[list[str]],
     lycoris: bool,
     save_merged_model: Optional[str],
     log_timing: Optional[Callable] = None
-) -> Optional[HunyuanVideoTransformer3DModelPacked]:
+) -> HunyuanVideoTransformer3DModelPacked:
     """load_optimized_dit_model_with_lora
     
     モデルのロード先は次のとおり。なお、実装では`block_to_swap`も考慮する。
@@ -490,12 +489,6 @@ def load_optimized_model(
     """
     if log_timing is None:
         log_timing = print
-
-    cached_model_dir = os.path.join(cache_dir, "models") if cache_dir is not None else None
-    cached_model_path = None
-    if cached_model_dir is not None:
-        base_model_cache_name = generate_cached_model_name(dit_path, lora_weight, lora_multiplier, fp8, fp8_scaled)
-        cached_model_path = os.path.join(cached_model_dir, f"{base_model_cache_name}.safetensors")
 
     model = load_dit_model(blocks_to_swap, fp8_scaled, lora_weight, dit_path, attn_mode, rope_scaling_timestep_threshold, rope_scaling_factor, device)
 
@@ -512,16 +505,9 @@ def load_optimized_model(
             save_merged_model, # マージ済みモデルの保存パス
             None  # converter
         )
-        if save_merged_model:
-            return None
 
     optimize_model(model, fp8_scaled, blocks_to_swap, fp8, device)
 
-    if cached_model_path is not None and not os.path.exists(cached_model_path) and not save_merged_model:
-        logger.info(f"Saving PyTorch optimized model state_dict to: {cached_model_path}")
-        os.makedirs(os.path.dirname(cached_model_path), exist_ok=True)
-        save_file(model.state_dict(), cached_model_path)
-        
     return model
 
 
@@ -531,13 +517,10 @@ def tensorrt_model(
         model_name: str, 
         compile_backend: Literal["torchscript", "dynamo"],
         batch_size,
-        latent_indices,
-        clean_latents,
-        clean_latent_indices,
-        clean_latents_2x,
-        clean_latent_2x_indices,
-        clean_latents_4x,
-        clean_latent_4x_indices,
+        latent_window_size,
+        height,
+        width,
+        text_seq_len,
         device: torch.device,
     ):
     logger.info(f"Torch Compiling[Backend: {compile_backend}]")
@@ -554,14 +537,31 @@ def tensorrt_model(
 
     if compile_backend == "dynamo":
         torch._dynamo.config.cache_size_limit = 32
+        
+    frames = latent_window_size * 4 - 3
+    # Initial hidden states - noisy latents shape: (B, C=16, T, H, W)
+    initial_hidden_states = torch.randn(
+        (batch_size, 16, frames, height // 8, width // 8),
+        device=device, dtype=torch.bfloat16
+    )
+    
+    # Initial encoder hidden states - text embeddings shape: (B, seq_len, embed_dim)
+    initial_encoder_hidden_states = torch.randn(
+        (batch_size, text_seq_len, 4096),  # 4096 is text_embed_dim from model config
+        device=device, dtype=torch.bfloat16
+    )
 
-    # See musubi_tuner.frame_pack.k_diffusion_hunyuan.sample_hunyuan
-    initial_hidden_states = # TODO: HunyuanVideoTransformer3DModelPacked#forwardの初期値
-    initial_encoder_hidden_states = # TODO: HunyuanVideoTransformer3DModelPacked#forwardの初期値
-
+    latent_indices = None
+    clean_latents = None
+    clean_latent_indices = None
+    clean_latents_2x = None
+    clean_latent_2x_indices = None
+    clean_latents_4x = None
+    clean_latent_4x_indices = None
+    
     # See musubi_tuner.frame_pack.hunyuan_video_packed.HunyuanVideoTransformer3DModelPacked#forward
     hidden_states, rope_freqs = model.process_input_hidden_states(
-        hidden_states,
+        initial_hidden_states,
         latent_indices,
         clean_latents,
         clean_latent_indices,
@@ -570,8 +570,22 @@ def tensorrt_model(
         clean_latents_4x,
         clean_latent_4x_indices,
     )
-    encoder_hidden_states = # TODO: context_embedder および extra_encoder_hidden_states での更新処理後の値
-    temb = # TODO
+    
+    # Process encoder hidden states through context embedder
+    timestep = torch.tensor([1000.0] * batch_size, device=device, dtype=torch.bfloat16)  # Dummy timestep
+    encoder_attention_mask = torch.ones((batch_size, text_seq_len), device=device, dtype=torch.bool)
+    
+    # Update encoder_hidden_states via context_embedder
+    encoder_hidden_states = model.context_embedder(
+        initial_encoder_hidden_states, 
+        timestep, 
+        encoder_attention_mask
+    )
+    
+    # Calculate temb (timestep-text embeddings)
+    guidance = torch.tensor([6.0 * 1000.0] * batch_size, device=device, dtype=torch.bfloat16)  # Scaled guidance
+    pooled_projections = torch.randn((batch_size, 768), device=device, dtype=torch.bfloat16)  # pooled_projection_dim=768
+    temb = model.time_text_embed(timestep, guidance, pooled_projections)
 
     attention_mask = None, None, None, None
     inputs = [hidden_states, encoder_hidden_states, temb, attention_mask, rope_freqs]
@@ -1141,42 +1155,57 @@ def generate(
         prepare_i2v_inputs(args, device, vae)
     )
 
-    model = load_optimized_model(
-        dit_path=args.dit,
-        fp8_scaled=args.fp8_scaled,
-        lora_weight=args.lora_weight,
-        lora_multiplier=args.lora_multiplier,
-        fp8=args.fp8,
-        blocks_to_swap=args.blocks_to_swap,
-        attn_mode=args.attn_mode,
-        rope_scaling_timestep_threshold=args.rope_scaling_timestep_threshold,
-        rope_scaling_factor=args.rope_scaling_factor,
-        cache_dir=args.cache_dir,
-        device=device,
-        include_patterns=args.include_patterns,
-        exclude_patterns=args.exclude_patterns,
-        lycoris=args.lycoris,
-        save_merged_model=args.save_merged_model,
-        log_timing=log_timing,
-    )
-    # if we only want to save the model, we can skip the rest
-    if model is None:
+    cached_model_dir = os.path.join(args.cache_dir, "models") if args.cache_dir is not None else None
+    cached_model_path = None
+    if cached_model_dir is not None:
+        base_model_cache_name = generate_cached_model_name(args.dit, args.lora_weight, args.lora_multiplier, args.fp8, args.fp8_scaled)
+        cached_model_path = os.path.join(cached_model_dir, f"{base_model_cache_name}.safetensors")
+    
+    if cached_model_path is not None and os.path.exists(cached_model_path):
+        model = create_packed_model_empty(args.attn_mode)
+        # ここで先に model.to_empty(device=device) すると、推論が動かなくなる。
+        state_dict = load_file(cached_model_path, device=str(device))
+        if args.fp8_scaled:
+            apply_fp8_monkey_patch(model, state_dict, use_scaled_mm=False)
+        model.load_state_dict(state_dict, strict=True, assign=True)        
+        model.to(device)
+    else:
+        model = load_optimized_model(
+            dit_path=args.dit,
+            fp8_scaled=args.fp8_scaled,
+            lora_weight=args.lora_weight,
+            lora_multiplier=args.lora_multiplier,
+            fp8=args.fp8,
+            blocks_to_swap=args.blocks_to_swap,
+            attn_mode=args.attn_mode,
+            rope_scaling_timestep_threshold=args.rope_scaling_timestep_threshold,
+            rope_scaling_factor=args.rope_scaling_factor,
+            device=device,
+            include_patterns=args.include_patterns,
+            exclude_patterns=args.exclude_patterns,
+            lycoris=args.lycoris,
+            save_merged_model=args.save_merged_model,
+            log_timing=log_timing,
+        )
+        if cached_model_path is not None:
+            logger.info(f"Saving PyTorch optimized model state_dict to: {cached_model_path}")
+            os.makedirs(os.path.dirname(cached_model_path), exist_ok=True)
+            save_file(model.state_dict(), cached_model_path)
+
+    if args.save_merged_model:
         return None
     
-    if args.compile:
+    if args.compile and cached_model_path is not None:
         model = tensorrt_model(
             model,
             args.cache_dir,
-            args.model_name,
-            args.compile_backend,
-            args.batch_size,
-            args.latent_indices,
-            args.clean_latents,
-            args.clean_latent_indices,
-            args.clean_latents_2x,
-            args.clean_latent_2x_indices,
-            args.clean_latents_4x,
-            args.clean_latent_4x_indices,
+            cached_model_path,
+            "torchscript",
+            1,
+            args.latent_window_size,
+            height,
+            width,
+            256,  # TODO
             device,
         )
 
