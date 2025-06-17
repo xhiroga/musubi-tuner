@@ -30,10 +30,12 @@ dependencies = [
 cu124 = [
     "torch>=2.5.1",
     "torchvision>=0.20.1",
+    "torch-tensorrt[cu124]>=2.5.0",
 ]
 cu128 = [
     "torch>=2.7.1",
     "torchvision>=0.22.1",
+    "torch-tensorrt[cu128]>=2.7.0",
 ]
 
 [tool.uv]
@@ -63,6 +65,9 @@ markers = [
     "adhoc: marks tests as adhoc (not run in CI)",
 ]
 env_files = [".env"]
+
+[tool.ruff]
+lint.ignore = ["F541"]
 
 [tool.uv.sources]
 torch = [

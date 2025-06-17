@@ -67,6 +67,7 @@ fpack_generate_video:
 		--save_path $(SAVE_PATH) --seed 1234  \
 		--lora_weight $(LORA_PATH) --lora_multiplier $(LORA_MULTIPLIER) \
 		--profile --cache_dir $(CACHE_DIR) \
+		--compile \
 		--log_level DEBUG
 
 # FramePack I2V生成 (プロファイリング版)

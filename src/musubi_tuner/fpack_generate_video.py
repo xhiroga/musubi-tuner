@@ -9,11 +9,12 @@ import random
 import re
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple, Callable
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 import numpy as np
 import torch
 import torch.profiler
+import torch_tensorrt
 from diskcache import Cache
 from PIL import Image
 from safetensors import safe_open
@@ -45,7 +46,6 @@ from musubi_tuner.hv_generate_video import (
 from musubi_tuner.modules.fp8_optimization_utils import apply_fp8_monkey_patch
 from musubi_tuner.networks import lora_framepack
 from musubi_tuner.utils.device_utils import clean_memory_on_device
-
 from musubi_tuner.wan_generate_video import merge_lora_weights
 
 logger = logging.getLogger(__name__)
@@ -359,7 +359,7 @@ def check_inputs(args: argparse.Namespace) -> Tuple[int, int, int]:
 # region DiT model
 
 
-def generate_optimized_model_filename(dit_path: str, lora_weight: list[str], lora_multiplier: list[float], fp8: bool, fp8_scaled: bool) -> str:
+def generate_cached_model_name(dit_path: str, lora_weight: list[str], lora_multiplier: list[float], fp8: bool, fp8_scaled: bool) -> str:
     key_parts = [
         f"dit:{os.path.basename(dit_path)}",
     ]    
@@ -450,21 +450,6 @@ def optimize_model(
         if target_device is not None and target_dtype is not None:
             model.to(target_device, target_dtype)  # move and cast  at the same time. this reduces redundant copy operations
 
-    # if args.compile:
-    #     compile_backend, compile_mode, compile_dynamic, compile_fullgraph = args.compile_args
-    #     logger.info(
-    #         f"Torch Compiling[Backend: {compile_backend}; Mode: {compile_mode}; Dynamic: {compile_dynamic}; Fullgraph: {compile_fullgraph}]"
-    #     )
-    #     torch._dynamo.config.cache_size_limit = 32
-    #     for i in range(len(model.blocks)):
-    #         model.blocks[i] = torch.compile(
-    #             model.blocks[i],
-    #             backend=compile_backend,
-    #             mode=compile_mode,
-    #             dynamic=compile_dynamic.lower() in "true",
-    #             fullgraph=compile_fullgraph.lower() in "true",
-    #         )
-
     if blocks_to_swap > 0:
         logger.info(f"Enable swap {blocks_to_swap} blocks to CPU from device: {device}")
         model.enable_block_swap(blocks_to_swap, device, supports_backward=False)
@@ -506,59 +491,104 @@ def load_optimized_model(
     if log_timing is None:
         log_timing = print
 
-    cache_model_dir = os.path.join(cache_dir, "models") if cache_dir is not None else None
-
-    cache_model_path = None
-    if cache_model_dir is not None:
-        filename = generate_optimized_model_filename(dit_path, lora_weight, lora_multiplier, fp8, fp8_scaled)
-        cache_model_path = os.path.join(cache_model_dir, filename)
-    
-    if cache_model_path is not None and os.path.exists(cache_model_path):
-        log_timing(f"load_optimized_model: {cache_model_path}")
-        logger.info(f"Load optimized model from disk: {cache_model_path}")
-        model = create_packed_model_empty(attn_mode)
-        # ここで先に model.to_empty(device=device) すると、推論が動かなくなる。
-        log_timing(f"load_file: {cache_model_path}")
-        state_dict = load_file(cache_model_path, device=str(device))
-        log_timing(f"apply_fp8_monkey_patch: {cache_model_path}")
-        if fp8_scaled:
-            apply_fp8_monkey_patch(model, state_dict, use_scaled_mm=False)
-        log_timing(f"load_state_dict: {cache_model_path}")
-        model.load_state_dict(state_dict, strict=True, assign=True)        
-        log_timing(f"to: {cache_model_path}")
-        model.to(device)
-        return model
+    cached_model_dir = os.path.join(cache_dir, "models") if cache_dir is not None else None
+    cached_model_path = None
+    if cached_model_dir is not None:
+        base_model_cache_name = generate_cached_model_name(dit_path, lora_weight, lora_multiplier, fp8, fp8_scaled)
+        cached_model_path = os.path.join(cached_model_dir, f"{base_model_cache_name}.safetensors")
 
     model = load_dit_model(blocks_to_swap, fp8_scaled, lora_weight, dit_path, attn_mode, rope_scaling_timestep_threshold, rope_scaling_factor, device)
 
-    # merge LoRA weights
     if lora_weight is not None and len(lora_weight) > 0:
-        # ugly hack to common merge_lora_weights function
         merge_lora_weights(
             lora_framepack,
-            model,
+            model, # `model` を渡す
             device,
             lora_weight,
             lora_multiplier,
             include_patterns,
             exclude_patterns,
             lycoris,
-            save_merged_model,
+            save_merged_model, # マージ済みモデルの保存パス
             None  # converter
         )
-
-        # if we only want to save the model, we can skip the rest
         if save_merged_model:
             return None
 
-    # optimize model: fp8 conversion, block swap etc.
     optimize_model(model, fp8_scaled, blocks_to_swap, fp8, device)
 
-    if cache_model_path is not None:
-        logger.info(f"Saving optimized model to disk: {cache_model_path}")
-        os.makedirs(os.path.dirname(cache_model_path), exist_ok=True)
-        save_file(model.state_dict(), cache_model_path)
+    if cached_model_path is not None and not os.path.exists(cached_model_path) and not save_merged_model:
+        logger.info(f"Saving PyTorch optimized model state_dict to: {cached_model_path}")
+        os.makedirs(os.path.dirname(cached_model_path), exist_ok=True)
+        save_file(model.state_dict(), cached_model_path)
+        
     return model
+
+
+def tensorrt_model(
+        model, 
+        cache_dir: str, 
+        model_name: str, 
+        compile_backend: Literal["torchscript", "dynamo"],
+        batch_size,
+        latent_indices,
+        clean_latents,
+        clean_latent_indices,
+        clean_latents_2x,
+        clean_latent_2x_indices,
+        clean_latents_4x,
+        clean_latent_4x_indices,
+        device: torch.device,
+    ):
+    logger.info(f"Torch Compiling[Backend: {compile_backend}]")
+    if batch_size != 1:
+        logger.warning(f"Batch size 1 is only supported for now.")
+        return
+
+    exported_model_dir = os.path.join(cache_dir, "models")
+    exported_model_path = os.path.join(exported_model_dir, f"{model_name}_trt.ep")
+
+    if os.path.exists(exported_model_path):
+        logger.info(f"Loading exported model from {exported_model_path}")
+        return torch.export.load(exported_model_path).module()
+
+    if compile_backend == "dynamo":
+        torch._dynamo.config.cache_size_limit = 32
+
+    hidden_states = # TODO: HunyuanVideoTransformer3DModelPacked#forwardの初期値
+    hidden_states, rope_freqs = model.process_input_hidden_states(
+        hidden_states,
+        latent_indices,
+        clean_latents,
+        clean_latent_indices,
+        clean_latents_2x,
+        clean_latent_2x_indices,
+        clean_latents_4x,
+        clean_latent_4x_indices,
+    )
+    encoder_hidden_states = # TODO: HunyuanVideoTransformer3DModelPacked#forwardの初期値
+    encoder_hidden_states = # TODO: context_embedder および extra_encoder_hidden_states での更新処理後の値
+    temb = # TODO
+    attention_mask = None, None, None, None
+    inputs = [hidden_states, encoder_hidden_states, temb, attention_mask, rope_freqs]
+
+    # Compile transformer blocks
+    for i in range(len(model.transformer_blocks)):
+        model.transformer_blocks[i] = torch_tensorrt.compile(
+            model.transformer_blocks[i],
+            ir=compile_backend,
+            inputs=inputs
+        )
+    
+    # Compile single transformer blocks
+    for i in range(len(model.single_transformer_blocks)):
+        model.single_transformer_blocks[i] = torch_tensorrt.compile(
+            model.single_transformer_blocks[i],
+            ir=compile_backend,
+            inputs=inputs
+        )
+
+    torch_tensorrt.save(model, exported_model_path, inputs=inputs)
 
 
 # endregion
@@ -1128,6 +1158,23 @@ def generate(
     # if we only want to save the model, we can skip the rest
     if model is None:
         return None
+    
+    if args.compile:
+        model = tensorrt_model(
+            model,
+            args.cache_dir,
+            args.model_name,
+            args.compile_backend,
+            args.batch_size,
+            args.latent_indices,
+            args.clean_latents,
+            args.clean_latent_indices,
+            args.clean_latents_2x,
+            args.clean_latent_2x_indices,
+            args.clean_latents_4x,
+            args.clean_latent_4x_indices,
+            device,
+        )
 
     # sampling
     latent_window_size = args.latent_window_size  # default is 9
