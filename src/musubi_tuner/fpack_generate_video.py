@@ -9,11 +9,12 @@ import random
 import re
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple, Callable
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 import numpy as np
 import torch
 import torch.profiler
+import torch_tensorrt
 from diskcache import Cache
 from PIL import Image
 from safetensors import safe_open
@@ -30,6 +31,7 @@ from musubi_tuner.frame_pack.framepack_utils import (
     load_vae,
 )
 from musubi_tuner.frame_pack.hunyuan_video_packed import (
+    Attention,
     HunyuanVideoTransformer3DModelPacked,
     create_packed_model_empty,
     load_packed_model,
@@ -45,7 +47,6 @@ from musubi_tuner.hv_generate_video import (
 from musubi_tuner.modules.fp8_optimization_utils import apply_fp8_monkey_patch
 from musubi_tuner.networks import lora_framepack
 from musubi_tuner.utils.device_utils import clean_memory_on_device
-
 from musubi_tuner.wan_generate_video import merge_lora_weights
 
 logger = logging.getLogger(__name__)
@@ -359,7 +360,7 @@ def check_inputs(args: argparse.Namespace) -> Tuple[int, int, int]:
 # region DiT model
 
 
-def generate_optimized_model_filename(dit_path: str, lora_weight: list[str], lora_multiplier: list[float], fp8: bool, fp8_scaled: bool) -> str:
+def generate_cached_model_name(dit_path: str, lora_weight: list[str], lora_multiplier: list[float], fp8: bool, fp8_scaled: bool) -> str:
     key_parts = [
         f"dit:{os.path.basename(dit_path)}",
     ]    
@@ -450,21 +451,6 @@ def optimize_model(
         if target_device is not None and target_dtype is not None:
             model.to(target_device, target_dtype)  # move and cast  at the same time. this reduces redundant copy operations
 
-    # if args.compile:
-    #     compile_backend, compile_mode, compile_dynamic, compile_fullgraph = args.compile_args
-    #     logger.info(
-    #         f"Torch Compiling[Backend: {compile_backend}; Mode: {compile_mode}; Dynamic: {compile_dynamic}; Fullgraph: {compile_fullgraph}]"
-    #     )
-    #     torch._dynamo.config.cache_size_limit = 32
-    #     for i in range(len(model.blocks)):
-    #         model.blocks[i] = torch.compile(
-    #             model.blocks[i],
-    #             backend=compile_backend,
-    #             mode=compile_mode,
-    #             dynamic=compile_dynamic.lower() in "true",
-    #             fullgraph=compile_fullgraph.lower() in "true",
-    #         )
-
     if blocks_to_swap > 0:
         logger.info(f"Enable swap {blocks_to_swap} blocks to CPU from device: {device}")
         model.enable_block_swap(blocks_to_swap, device, supports_backward=False)
@@ -488,14 +474,13 @@ def load_optimized_model(
     attn_mode: str, 
     rope_scaling_timestep_threshold: int, 
     rope_scaling_factor: float, 
-    cache_dir: str | None,
     device: torch.device,
     include_patterns: Optional[list[str]],
     exclude_patterns: Optional[list[str]],
     lycoris: bool,
     save_merged_model: Optional[str],
     log_timing: Optional[Callable] = None
-) -> Optional[HunyuanVideoTransformer3DModelPacked]:
+) -> HunyuanVideoTransformer3DModelPacked:
     """load_optimized_dit_model_with_lora
     
     モデルのロード先は次のとおり。なお、実装では`block_to_swap`も考慮する。
@@ -506,59 +491,123 @@ def load_optimized_model(
     if log_timing is None:
         log_timing = print
 
-    cache_model_dir = os.path.join(cache_dir, "models") if cache_dir is not None else None
-
-    cache_model_path = None
-    if cache_model_dir is not None:
-        filename = generate_optimized_model_filename(dit_path, lora_weight, lora_multiplier, fp8, fp8_scaled)
-        cache_model_path = os.path.join(cache_model_dir, filename)
-    
-    if cache_model_path is not None and os.path.exists(cache_model_path):
-        log_timing(f"load_optimized_model: {cache_model_path}")
-        logger.info(f"Load optimized model from disk: {cache_model_path}")
-        model = create_packed_model_empty(attn_mode)
-        # ここで先に model.to_empty(device=device) すると、推論が動かなくなる。
-        log_timing(f"load_file: {cache_model_path}")
-        state_dict = load_file(cache_model_path, device=str(device))
-        log_timing(f"apply_fp8_monkey_patch: {cache_model_path}")
-        if fp8_scaled:
-            apply_fp8_monkey_patch(model, state_dict, use_scaled_mm=False)
-        log_timing(f"load_state_dict: {cache_model_path}")
-        model.load_state_dict(state_dict, strict=True, assign=True)        
-        log_timing(f"to: {cache_model_path}")
-        model.to(device)
-        return model
-
     model = load_dit_model(blocks_to_swap, fp8_scaled, lora_weight, dit_path, attn_mode, rope_scaling_timestep_threshold, rope_scaling_factor, device)
 
-    # merge LoRA weights
     if lora_weight is not None and len(lora_weight) > 0:
-        # ugly hack to common merge_lora_weights function
         merge_lora_weights(
             lora_framepack,
-            model,
+            model, # `model` を渡す
             device,
             lora_weight,
             lora_multiplier,
             include_patterns,
             exclude_patterns,
             lycoris,
-            save_merged_model,
+            save_merged_model, # マージ済みモデルの保存パス
             None  # converter
         )
 
-        # if we only want to save the model, we can skip the rest
-        if save_merged_model:
-            return None
-
-    # optimize model: fp8 conversion, block swap etc.
     optimize_model(model, fp8_scaled, blocks_to_swap, fp8, device)
 
-    if cache_model_path is not None:
-        logger.info(f"Saving optimized model to disk: {cache_model_path}")
-        os.makedirs(os.path.dirname(cache_model_path), exist_ok=True)
-        save_file(model.state_dict(), cache_model_path)
     return model
+
+
+def tensorrt_model(
+        model: HunyuanVideoTransformer3DModelPacked,
+        cache_dir: str, 
+        model_name: str, 
+        compile_backend: Literal["torchscript", "dynamo"],
+        batch_size,
+        latent_window_size,
+        height,
+        width,
+        text_seq_len,
+        device: torch.device,
+    ):
+    logger.info(f"Torch Compiling[Backend: {compile_backend}]")
+    if batch_size != 1:
+        logger.warning(f"Batch size 1 is only supported for now.")
+        return
+
+    exported_model_dir = os.path.join(cache_dir, "models")
+    exported_model_path = os.path.join(exported_model_dir, f"{model_name}_trt.ep")
+
+    if os.path.exists(exported_model_path):
+        logger.info(f"Loading exported model from {exported_model_path}")
+        return torch.export.load(exported_model_path).module()
+
+    if compile_backend == "dynamo":
+        torch._dynamo.config.cache_size_limit = 32
+        
+    frames = latent_window_size * 4 - 3
+    # Initial hidden states - noisy latents shape: (B, C=16, T, H, W)
+    initial_hidden_states = torch.randn(
+        (batch_size, 16, frames, height // 8, width // 8),
+        device=device, dtype=torch.bfloat16
+    )
+    
+    # Initial encoder hidden states - text embeddings shape: (B, seq_len, embed_dim)
+    initial_encoder_hidden_states = torch.randn(
+        (batch_size, text_seq_len, 4096),  # 4096 is text_embed_dim from model config
+        device=device, dtype=torch.bfloat16
+    )
+
+    # See musubi_tuner.frame_pack.hunyuan_video_packed.HunyuanVideoTransformer3DModelPacked#forward
+    hidden_states, rope_freqs = model.process_input_hidden_states(
+        initial_hidden_states,
+        latent_indices=torch.zeros(batch_size, 5),
+        clean_latents=torch.zeros(batch_size, 16, 2, 120, 68),
+        clean_latent_indices=torch.zeros(batch_size, 2),
+        clean_latents_2x=torch.zeros(batch_size, 16, 2, 120, 68),
+        clean_latent_2x_indices=torch.zeros(batch_size, 2),
+        clean_latents_4x=torch.zeros(batch_size, 16, 16, 120, 68),
+        clean_latent_4x_indices=torch.zeros(batch_size, 16),
+    )
+    
+    # Process encoder hidden states through context embedder
+    timestep = torch.tensor([1000.0] * batch_size, device=device, dtype=torch.bfloat16)  # Dummy timestep
+    encoder_attention_mask = torch.ones((batch_size, text_seq_len), device=device, dtype=torch.bool)
+    
+    # Update encoder_hidden_states via context_embedder
+    encoder_hidden_states = model.context_embedder(
+        initial_encoder_hidden_states, 
+        timestep, 
+        encoder_attention_mask
+    )
+    
+    # Calculate temb (timestep-text embeddings)
+    guidance = torch.tensor([6.0 * 1000.0] * batch_size, device=device, dtype=torch.bfloat16)  # Scaled guidance
+    pooled_projections = torch.randn((batch_size, 768), device=device, dtype=torch.bfloat16)  # pooled_projection_dim=768
+    temb = model.time_text_embed(timestep, guidance, pooled_projections)
+
+    attention_mask = None, None, None, None
+    inputs = [hidden_states, encoder_hidden_states, temb, attention_mask, rope_freqs]
+
+    # Compile transformer blocks
+    for i in range(len(model.transformer_blocks)):
+        for m in model.transformer_blocks[i].modules():
+            if isinstance(m, Attention):
+                m.set_processor(None) 
+
+        model.transformer_blocks[i] = torch_tensorrt.compile(
+            model.transformer_blocks[i],
+            ir=compile_backend,
+            inputs=inputs
+        )
+    
+    # Compile single transformer blocks
+    for i in range(len(model.single_transformer_blocks)):
+        for m in model.single_transformer_blocks[i].modules():
+            if isinstance(m, Attention):
+                m.set_processor(None) 
+
+        model.single_transformer_blocks[i] = torch_tensorrt.compile(
+            model.single_transformer_blocks[i],
+            ir=compile_backend,
+            inputs=inputs
+        )
+
+    torch_tensorrt.save(model, exported_model_path, inputs=inputs)
 
 
 # endregion
@@ -1107,27 +1156,59 @@ def generate(
         prepare_i2v_inputs(args, device, vae)
     )
 
-    model = load_optimized_model(
-        dit_path=args.dit,
-        fp8_scaled=args.fp8_scaled,
-        lora_weight=args.lora_weight,
-        lora_multiplier=args.lora_multiplier,
-        fp8=args.fp8,
-        blocks_to_swap=args.blocks_to_swap,
-        attn_mode=args.attn_mode,
-        rope_scaling_timestep_threshold=args.rope_scaling_timestep_threshold,
-        rope_scaling_factor=args.rope_scaling_factor,
-        cache_dir=args.cache_dir,
-        device=device,
-        include_patterns=args.include_patterns,
-        exclude_patterns=args.exclude_patterns,
-        lycoris=args.lycoris,
-        save_merged_model=args.save_merged_model,
-        log_timing=log_timing,
-    )
-    # if we only want to save the model, we can skip the rest
-    if model is None:
+    cached_model_dir = os.path.join(args.cache_dir, "models") if args.cache_dir is not None else None
+    cached_model_path = None
+    if cached_model_dir is not None:
+        base_model_cache_name = generate_cached_model_name(args.dit, args.lora_weight, args.lora_multiplier, args.fp8, args.fp8_scaled)
+        cached_model_path = os.path.join(cached_model_dir, f"{base_model_cache_name}.safetensors")
+    
+    if cached_model_path is not None and os.path.exists(cached_model_path):
+        model = create_packed_model_empty(args.attn_mode)
+        # ここで先に model.to_empty(device=device) すると、推論が動かなくなる。
+        state_dict = load_file(cached_model_path, device=str(device))
+        if args.fp8_scaled:
+            apply_fp8_monkey_patch(model, state_dict, use_scaled_mm=False)
+        model.load_state_dict(state_dict, strict=True, assign=True)        
+        model.to(device)
+    else:
+        model = load_optimized_model(
+            dit_path=args.dit,
+            fp8_scaled=args.fp8_scaled,
+            lora_weight=args.lora_weight,
+            lora_multiplier=args.lora_multiplier,
+            fp8=args.fp8,
+            blocks_to_swap=args.blocks_to_swap,
+            attn_mode=args.attn_mode,
+            rope_scaling_timestep_threshold=args.rope_scaling_timestep_threshold,
+            rope_scaling_factor=args.rope_scaling_factor,
+            device=device,
+            include_patterns=args.include_patterns,
+            exclude_patterns=args.exclude_patterns,
+            lycoris=args.lycoris,
+            save_merged_model=args.save_merged_model,
+            log_timing=log_timing,
+        )
+        if cached_model_path is not None:
+            logger.info(f"Saving PyTorch optimized model state_dict to: {cached_model_path}")
+            os.makedirs(os.path.dirname(cached_model_path), exist_ok=True)
+            save_file(model.state_dict(), cached_model_path)
+
+    if args.save_merged_model:
         return None
+    
+    if args.compile and cached_model_path is not None:
+        model = tensorrt_model(
+            model,
+            args.cache_dir,
+            cached_model_path,
+            "torchscript",
+            1,
+            args.latent_window_size,
+            height,
+            width,
+            256,  # TODO
+            device,
+        )
 
     # sampling
     latent_window_size = args.latent_window_size  # default is 9
