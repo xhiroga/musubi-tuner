@@ -74,14 +74,14 @@ fpack_generate_video_on_modal_profile:
 	@echo "🔍 Generating video on Modal with profiling..."
 	modal run src/musubi_tuner/fpack_generate_video_on_modal.py \
 		--image-path $(IMAGE_PATH) \
-		--prompt "$(PROMPT)" \
-		--video-width $(VIDEO_WIDTH) \
-		--video-height $(VIDEO_HEIGHT) \
-		--fps $(FPS) \
-		--infer-steps $(INFER_STEPS) \
-		--video-sections $(VIDEO_SECTIONS) \
-		--latent-window-size $(LATENT_WINDOW_SIZE) \
-		--seed $(SEED) \
+		--prompt $(PROMPT) \
+		--video-height 960 \
+		--video-width 544 \
+		--fps 30 \
+		--infer-steps 10 \
+		--video-sections 1 \
+		--latent-window-size 5 \
+		--seed 1234 \
 		--save-path $(SAVE_PATH) \
 		--enable-profiling \
 		--profile-steps 3 \
