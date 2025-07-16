@@ -585,14 +585,6 @@ def group_files_by_folder(all_files):
     return list_of_lists
 
 
-def generate_timestamp():
-    now = datetime.datetime.now()
-    timestamp = now.strftime("%y%m%d_%H%M%S")
-    milliseconds = f"{int(now.microsecond / 1000):03d}"
-    random_number = random.randint(0, 9999)
-    return f"{timestamp}_{milliseconds}_{random_number}"
-
-
 def write_PIL_image_with_png_info(image, metadata, path):
     from PIL.PngImagePlugin import PngInfo
 
