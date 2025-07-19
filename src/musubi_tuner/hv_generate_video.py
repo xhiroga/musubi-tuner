@@ -64,7 +64,7 @@ def synchronize_device(device: torch.device):
 
 def generate_timestamp():
     now = datetime.now()
-    timestamp = now.strftime("%y%m%d_%H%M%S")
+    timestamp = now.strftime("%Y%m%d_%H%M%S")
     milliseconds = f"{int(now.microsecond / 1000):03d}"
     random_number = random.randint(0, 9999)
     return f"{timestamp}_{milliseconds}_{random_number}"
